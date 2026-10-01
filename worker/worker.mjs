@@ -14,6 +14,8 @@
 //   pref:{CODE}:{uid}         { scores, feedback, wc }        (본인만 씀)
 //   log:{CODE}:{역순시각}-{랜덤}  value '1' + metadata(메뉴/식당/시각) — list 한 번으로 목록을 읽는다
 //   fail:{id}                 로그인 실패 횟수 (15분 TTL)
+//   room:{CODE}:meta          "같이 정하기" 방 상태 (방장만 씀, 6시간 TTL)
+//   room:{CODE}:m:{uid}       방 참가자 각자의 조건/준비 상태 (본인만 씀, 6시간 TTL)
 
 const SESSION_TTL = 60 * 60 * 24 * 30;
 const PBKDF2_ITER = 100000; // Workers의 PBKDF2 반복 상한
@@ -76,6 +78,14 @@ async function route(request, env) {
   if (pathname === '/api/history' && m === 'DELETE') return deleteHistory(url, env, session.user);
   if (pathname === '/api/household' && m === 'PUT') return saveHousehold(request, env, session.user);
   if (pathname === '/api/place' && m === 'GET') return placeInfo(url);
+  if (pathname === '/api/room' && m === 'GET') return json(await roomView(env, session.user));
+  if (pathname === '/api/room' && m === 'POST') return createRoom(env, session.user);
+  if (pathname === '/api/room/join' && m === 'POST') return joinRoom(env, session.user);
+  if (pathname === '/api/room/me' && m === 'PUT') return roomMe(request, env, session.user);
+  if (pathname === '/api/room/settings' && m === 'PUT') return roomSettings(request, env, session.user);
+  if (pathname === '/api/room/pick' && m === 'POST') return roomPick(request, env, session.user);
+  if (pathname === '/api/room/reset' && m === 'POST') return roomReset(env, session.user);
+  if (pathname === '/api/room/close' && m === 'POST') return roomClose(request, env, session.user);
   throw new HttpError(404, '없는 경로입니다');
 }
 
@@ -359,4 +369,172 @@ async function placeInfo(url) {
   if (url.searchParams.get('debug')) return json({ placeId, outline: outline(data), found: findRating(data) });
   const r = findRating(data);
   return json({ placeId, score: r ? r.score : null, count: r ? r.count : null, path: r ? r.path : null });
+}
+
+
+// ------------------------------------------------------------------ "같이 정하기" 방
+// 흐름: 방장이 방을 연다 → 가구 구성원이 참여한다 → 각자 조건을 고르고 "준비완료" → 모두 준비되면 방장만 "메뉴 뽑기"
+//       → (다시 뽑기마다 pickCount가 올라가고 모두에게 "N번째 뽑는 중"이 보인다) → 방장이 확정하면 방이 닫힌다.
+// - 방 상태(meta)는 방장만 쓰고, 조건/준비/"다시 뽑자" 요청은 참가자가 각자 자기 키에만 쓴다 → 동시에 눌러도 서로 덮어쓰지 않는다.
+// - 준비완료는 meta.round와 같은 readyRound일 때만 유효하다. 방장이 "조건 다시 정하기"로 round를 올리면 모두의 준비가 한 번에 풀린다.
+// - 눈치 방지: 모두 준비하기 전에는 다른 사람의 조건을 내려주지 않는다(준비 여부만 보인다).
+const ROOM_TTL = 60 * 60 * 6;
+const roomMetaKey = (hid) => `room:${hid}:meta`;
+const roomMemKey = (hid, uid) => `room:${hid}:m:${uid}`;
+
+function cleanCond(c) {
+  if (!c || typeof c !== 'object') throw new HttpError(400, '조건 형식이 올바르지 않습니다');
+  const list = (v) => {
+    if (v == null) return [];
+    if (!Array.isArray(v) || v.length > 16) throw new HttpError(400, '조건 형식이 올바르지 않습니다');
+    return v.map((x) => { if (typeof x !== 'string' || x.length > 12) throw new HttpError(400, '조건 형식이 올바르지 않습니다'); return x; });
+  };
+  const num = (v) => {
+    if (v == null) return null;
+    if (typeof v !== 'number' || !(v >= 0 && v <= 1000000)) throw new HttpError(400, '가격 형식이 올바르지 않습니다');
+    return Math.round(v);
+  };
+  return {
+    priceId: typeof c.priceId === 'string' && /^[a-z0-9]{1,6}$/.test(c.priceId) ? c.priceId : 'any',
+    priceMin: num(c.priceMin), priceMax: num(c.priceMax),
+    cats: list(c.cats), drinks: list(c.drinks), tastes: list(c.tastes), forms: list(c.forms), mains: list(c.mains),
+  };
+}
+
+async function roomState(env, user) {
+  const meta = await kvGet(env, roomMetaKey(user.hid));
+  if (!meta) return null;
+  const hh = await kvGet(env, 'hh:' + user.hid);
+  const docs = await Promise.all(hh.members.map((uid) => kvGet(env, roomMemKey(user.hid, uid))));
+  const isReady = (d) => !!d && !!d.cond && d.readyRound === meta.round;
+  const joined = docs.filter(Boolean).length;
+  const allReady = joined >= 2 && hh.members.every((uid, i) => !docs[i] || isReady(docs[i]));
+  return { meta, hh, docs, isReady, joined, allReady };
+}
+
+async function roomView(env, user) {
+  const st = await roomState(env, user);
+  if (!st) return { room: null };
+  const { meta, hh, docs, isReady, allReady } = st;
+  const members = hh.members.map((uid, i) => {
+    const d = docs[i];
+    return {
+      uid, joined: !!d, ready: isReady(d),
+      // "다시 뽑자" 요청은 지금 이 뽑기에 대한 것만 유효하다 (방장이 다시 뽑으면 자동으로 사라진다)
+      reroll: !!(d && d.req && d.req.round === meta.round && d.req.n === meta.pickCount && meta.pickCount > 0),
+      cond: d && d.cond && (allReady || uid === user.id) ? d.cond : undefined,
+    };
+  });
+  return { room: meta, members, allReady };
+}
+
+const putMeta = (env, hid, meta) => kvPut(env, roomMetaKey(hid), meta, { expirationTtl: ROOM_TTL });
+
+async function createRoom(env, user) {
+  const existing = await kvGet(env, roomMetaKey(user.hid));
+  if (existing && existing.phase !== 'closed') return json(await roomView(env, user)); // 이미 열린 방이 있으면 그걸 보여준다
+  const hh = await kvGet(env, 'hh:' + user.hid);
+  await Promise.all(hh.members.map((uid) => env.DP.delete(roomMemKey(user.hid, uid)))); // 닫힌 옛 방의 참가 기록 정리
+  const meta = {
+    roomId: randomToken(6), hostUid: user.id, createdAt: Date.now(), phase: 'setup', round: 1, pickCount: 0,
+    who: 'all', headcount: (hh.settings && hh.settings.defaultHeadcount) || 2, history: [], result: null, finalMenuId: null,
+  };
+  await putMeta(env, user.hid, meta);
+  await kvPut(env, roomMemKey(user.hid, user.id), { cond: null, readyRound: null, req: null }, { expirationTtl: ROOM_TTL });
+  return json(await roomView(env, user), 201);
+}
+
+async function joinRoom(env, user) {
+  const meta = await kvGet(env, roomMetaKey(user.hid));
+  if (!meta || meta.phase === 'closed') throw new HttpError(404, '열려 있는 방이 없습니다');
+  if (!(await kvGet(env, roomMemKey(user.hid, user.id)))) {
+    await kvPut(env, roomMemKey(user.hid, user.id), { cond: null, readyRound: null, req: null }, { expirationTtl: ROOM_TTL });
+  }
+  return json(await roomView(env, user));
+}
+
+async function roomMe(request, env, user) {
+  const meta = await kvGet(env, roomMetaKey(user.hid));
+  if (!meta || meta.phase === 'closed') throw new HttpError(404, '열려 있는 방이 없습니다');
+  const key = roomMemKey(user.hid, user.id);
+  const doc = await kvGet(env, key);
+  if (!doc) throw new HttpError(403, '먼저 방에 참여해주세요');
+  const body = await readBody(request);
+  if (body.reroll === true) { // 의견내기: 방장에게 "다시 뽑자"고 요청 (방장만 뽑을 수 있다)
+    if (meta.phase !== 'picked') throw new HttpError(409, '아직 뽑기 전이에요');
+    if (user.id === meta.hostUid) throw new HttpError(400, '방장은 직접 다시 뽑을 수 있어요');
+    doc.req = { round: meta.round, n: meta.pickCount, at: Date.now() };
+  } else {
+    if (meta.phase !== 'setup') throw new HttpError(409, '조건은 방장이 "조건 다시 정하기"를 누른 뒤에 바꿀 수 있어요');
+    const ready = !!doc.cond && doc.readyRound === meta.round;
+    if (body.ready === true) {
+      if (ready && body.cond !== undefined) throw new HttpError(409, '준비를 취소한 뒤에 수정해주세요');
+      const cond = body.cond !== undefined ? cleanCond(body.cond) : doc.cond;
+      if (!cond) throw new HttpError(400, '조건을 먼저 골라주세요');
+      doc.cond = cond; doc.readyRound = meta.round;
+    } else if (body.ready === false) {
+      doc.readyRound = null;
+    } else if (body.cond !== undefined) {
+      if (ready) throw new HttpError(409, '준비를 취소한 뒤에 수정해주세요');
+      doc.cond = cleanCond(body.cond);
+    }
+  }
+  await kvPut(env, key, doc, { expirationTtl: ROOM_TTL });
+  return json(await roomView(env, user));
+}
+
+function hostOnly(st, user) {
+  if (!st || st.meta.phase === 'closed') throw new HttpError(404, '열려 있는 방이 없습니다');
+  if (st.meta.hostUid !== user.id) throw new HttpError(403, '방장만 할 수 있어요');
+}
+
+async function roomSettings(request, env, user) {
+  const st = await roomState(env, user); hostOnly(st, user);
+  if (st.meta.phase !== 'setup') throw new HttpError(409, '뽑기가 시작된 뒤에는 바꿀 수 없어요');
+  const b = await readBody(request);
+  if (b.who !== undefined) {
+    if (b.who !== 'all' && !st.hh.members.includes(b.who)) throw new HttpError(400, '잘못된 선택입니다');
+    st.meta.who = b.who;
+  }
+  if (b.headcount !== undefined) {
+    if (!Number.isInteger(b.headcount) || b.headcount < 1 || b.headcount > 6) throw new HttpError(400, '인원은 1~6명입니다');
+    st.meta.headcount = b.headcount;
+  }
+  await putMeta(env, user.hid, st.meta);
+  return json(await roomView(env, user));
+}
+
+async function roomPick(request, env, user) {
+  const st = await roomState(env, user); hostOnly(st, user);
+  if (!st.allReady) throw new HttpError(409, '모두 준비완료가 되어야 뽑을 수 있어요');
+  const b = await readBody(request);
+  if (!MENU_ID_RE.test(String(b.menuId)) || typeof b.perPerson !== 'number' || !(b.perPerson >= 0 && b.perPerson <= 1000000) || !Array.isArray(b.reasons) || b.reasons.length > 10) {
+    throw new HttpError(400, '잘못된 결과 형식입니다');
+  }
+  const reasons = b.reasons.map((r) => ({ k: String((r && r.k) || '').slice(0, 12), text: String((r && r.text) || '').slice(0, 200) }));
+  const meta = st.meta, n = meta.pickCount + 1; // 횟수는 서버가 센다 (클라이언트가 바꿀 수 없다)
+  meta.pickCount = n;
+  meta.phase = 'picked';
+  meta.result = { n, menuId: b.menuId, perPerson: Math.round(b.perPerson), reasons, at: Date.now() };
+  meta.history = (meta.history || []).concat([{ n, menuId: b.menuId, at: meta.result.at }]).slice(-60);
+  await putMeta(env, user.hid, meta);
+  return json(await roomView(env, user));
+}
+
+async function roomReset(env, user) {
+  const st = await roomState(env, user); hostOnly(st, user);
+  const meta = st.meta; // round를 올리면 모두의 준비완료가 자동으로 풀린다
+  meta.round += 1; meta.pickCount = 0; meta.result = null; meta.history = []; meta.phase = 'setup';
+  await putMeta(env, user.hid, meta);
+  return json(await roomView(env, user));
+}
+
+async function roomClose(request, env, user) {
+  const st = await roomState(env, user); hostOnly(st, user);
+  const b = await readBody(request);
+  st.meta.phase = 'closed';
+  st.meta.finalMenuId = MENU_ID_RE.test(String(b.menuId)) ? b.menuId : null;
+  st.meta.closedAt = Date.now();
+  await putMeta(env, user.hid, st.meta);
+  return json(await roomView(env, user));
 }

@@ -73,7 +73,7 @@
     view: 'boot', tab: 'pick', token: store.get('dp_token') || '', error: '', busy: false,
     authMode: 'login', authDraft: { hm: 'create' },
     me: null, household: null, members: [], history: [],
-    cond: null, who: 'all', result: null, shown: {}, ignoreRecent: false, rest: { status: 'idle' }, chosenRest: null,
+    cond: null, who: 'all', room: null, roomDraft: null, roomMsg: '', roomBusy: false, result: null, shown: {}, ignoreRecent: false, rest: { status: 'idle' }, chosenRest: null,
     wc: null, wcStage: 'intro'
   };
 
@@ -200,9 +200,10 @@
 
   function currentPick() { return S.result && S.result.picks ? S.result.picks[S.result.idx] : null; }
 
-  function loadRestaurants() {
-    var p = currentPick(); if (!p) return;
-    var key = p.menu.id, st = settings();
+  function loadRestaurants() { var p = currentPick(); if (p) loadRestaurantsFor(p.menu); }
+  function loadRestaurantsFor(menu) {
+    var p = { menu: menu };
+    var key = menu.id, st = settings();
     if (st.lat == null || st.lng == null) { S.rest = { key: key, status: 'noaddr' }; render(); return; }
     S.rest = { key: key, status: 'loading' }; render();
     Kakao.load().then(function (ok) {
@@ -313,7 +314,8 @@
     }, function (err) { S.busy = false; S.error = err.message; render(); });
   }
   function afterLogin() {
-    loadCond(); S.result = null; S.shown = {}; S.tab = 'pick';
+    loadCond(); S.roomDraft = loadDraft(); S.room = null; S.roomMsg = ''; S.result = null; S.shown = {}; S.tab = 'pick';
+    pollRoom();
     var skipped = store.get('dp_wc_skip_' + S.me.uid);
     if ((myPrefs().wc || {}).runs === 0 && !skipped) { S.view = 'wc'; S.wcStage = 'intro'; S.wc = null; }
     else S.view = 'main';
@@ -321,15 +323,17 @@
   }
   function logoutLocal() {
     S.token = ''; store.del('dp_token'); S.me = null; S.household = null; S.members = []; S.history = [];
-    S.result = null; S.view = 'auth'; S.authMode = 'login'; S.authDraft = { hm: 'create' }; S.error = ''; render();
+    S.room = null; S.result = null; S.view = 'auth'; S.authMode = 'login'; S.authDraft = { hm: 'create' }; S.error = ''; render();
   }
   function logout() { api('POST', '/api/logout').then(logoutLocal, logoutLocal); }
 
   // ------------------------------------------------------------------ 메인(탭)
   function tabbar() {
-    var tabs = [['pick', 'dice-five', '추천'], ['log', 'notebook', '기록'], ['me', 'user-circle', '마이']];
+    var tabs = [['pick', 'dice-five', '추천'], ['room', 'users-three', '같이'], ['log', 'notebook', '기록'], ['me', 'user-circle', '마이']];
+    var R = S.room, inviteDot = !!(R && R.room && R.room.phase !== 'closed' && !roomMe().joined); // 상대가 방을 열었는데 아직 참여 전
     return h('nav', { class: 'tabbar', 'aria-label': '메뉴' }, tabs.map(function (t) {
-      return h('button', { class: S.tab === t[0] ? 'on' : '', onclick: function () { switchTab(t[0]); }, 'aria-current': S.tab === t[0] ? 'page' : null }, ico(t[1], S.tab === t[0]), t[2]);
+      return h('button', { class: S.tab === t[0] ? 'on' : '', onclick: function () { switchTab(t[0]); }, 'aria-current': S.tab === t[0] ? 'page' : null },
+        ico(t[1], S.tab === t[0]), t[2], t[0] === 'room' && inviteDot ? h('span', { class: 'dot', 'aria-label': '새 방' }) : null);
     }));
   }
   function switchTab(t) {
@@ -345,16 +349,17 @@
   function viewMain() {
     var wrap = h('div', null, header());
     if (S.tab === 'pick') wrap.appendChild(tabPick());
+    else if (S.tab === 'room') wrap.appendChild(tabRoom());
     else if (S.tab === 'log') wrap.appendChild(tabLog());
     else wrap.appendChild(tabMe());
     return wrap;
   }
 
   // ---- 추천 탭
-  function chipGroup(label, hint, options, isActive, onClick) {
+  function chipGroup(label, hint, options, isActive, onClick, locked) {
     return h('div', { class: 'group' }, h('p', { class: 'group-label' }, label, hint ? h('small', null, hint) : null),
       h('div', { class: 'chips' }, options.map(function (o) {
-        return h('button', { type: 'button', class: 'chip' + (isActive(o.value) ? ' active' : ''), 'aria-pressed': isActive(o.value) ? 'true' : 'false', onclick: function () { onClick(o.value); } }, o.label);
+        return h('button', { type: 'button', class: 'chip' + (isActive(o.value) ? ' active' : ''), disabled: !!locked, 'aria-pressed': isActive(o.value) ? 'true' : 'false', onclick: function () { onClick(o.value); } }, o.label);
       })));
   }
   function opts(arr) { return arr.map(function (x) { return { value: x, label: x }; }); }
@@ -441,7 +446,7 @@
         h('span', { class: 'kicker' }, '오늘의 저녁픽'),
         h('span', { class: 'result-emoji', 'aria-hidden': 'true' }, m.emoji),
         h('h2', { class: 'result-name' }, m.name),
-        h('p', { class: 'result-meta' }, m.cat + ' · ' + m.sub + (m.type === 'share' ? ' · 권장 ' + m.serves[0] + '~' + m.serves[1] + '인분' : '')),
+        h('p', { class: 'result-meta' }, m.cat + ' · ' + m.sub + (m.type === 'share' ? ' · 권장 ' + Core.servesText(m) : '')),
         h('div', { class: 'price-badge' }, '인당 약 ' + won(p.perPerson)),
         h('div', { class: 'tags' }, m.tags.map(function (t) { return h('span', { class: 'tag' }, '#' + t); })),
         h('p', { class: 'why-title' }, '왜 이 메뉴?'),
@@ -496,6 +501,254 @@
         S.busy = false; S.result = null; S.shown = {};
         toast('기록했어요! ' + settings().recentDays + '일 동안은 다시 안 나와요'); render();
       }, function (e) { S.busy = false; render(); fail(e); });
+  }
+
+
+  // ---- 같이 탭: "방" — 각자 조건을 고르고 준비완료 → 모두 준비되면 방장이 뽑기
+  var ROOM_LISTS = [['cats', DM.CATEGORIES], ['drinks', DM.DRINKS], ['tastes', DM.TASTES], ['forms', DM.FORMS], ['mains', DM.MAINS]];
+  function emptyDraft() { return { priceId: 'any', cats: [], drinks: [], tastes: [], forms: [], mains: [] }; }
+  function loadDraft() {
+    var d = emptyDraft();
+    try {
+      var s = JSON.parse(store.get('dp_room_draft') || 'null');
+      if (s) {
+        if (PRICE_OPTS.some(function (p) { return p.id === s.priceId; })) d.priceId = s.priceId;
+        ROOM_LISTS.forEach(function (l) { d[l[0]] = (s[l[0]] || []).filter(function (x) { return l[1].indexOf(x) !== -1; }); });
+      }
+    } catch (e) { /* 무시 */ }
+    return d;
+  }
+  function saveDraft() { store.set('dp_room_draft', JSON.stringify(S.roomDraft)); }
+  function draftToCond(d) {
+    var p = PRICE_OPTS.filter(function (x) { return x.id === d.priceId; })[0];
+    return { priceId: d.priceId, priceMin: p.min, priceMax: p.max, cats: d.cats, drinks: d.drinks, tastes: d.tastes, forms: d.forms, mains: d.mains };
+  }
+  function roomMe() {
+    var m = S.room && S.room.members ? S.room.members.filter(function (x) { return x.uid === S.me.uid; })[0] : null;
+    return m || { joined: false, ready: false, reroll: false };
+  }
+  function nameOf(uid) { var m = S.members.filter(function (x) { return x.uid === uid; })[0]; return m ? m.name : uid; }
+
+  function setRoom(v) {
+    var prev = S.room; S.room = v;
+    var rs = v && v.room && v.room.result, ps = prev && prev.room && prev.room.result;
+    if (rs && (!ps || ps.menuId !== rs.menuId || ps.n !== rs.n) && MENU_BY_ID[rs.menuId]) { S.chosenRest = null; loadRestaurantsFor(MENU_BY_ID[rs.menuId]); }
+  }
+  function roomCall(method, path, body) {
+    S.roomBusy = true; S.roomMsg = ''; render();
+    return api(method, path, body).then(function (v) { S.roomBusy = false; setRoom(v); render(); return v; },
+      function (e) { S.roomBusy = false; pollRoom(); render(); fail(e); throw e; });
+  }
+  // 4초마다(같이 탭이 열려 있을 때) 방 상태를 가져온다. 바뀐 경우에만 다시 그린다.
+  function pollRoom() {
+    if (!S.token || !S.me || S.roomBusy) return Promise.resolve();
+    return api('GET', '/api/room').then(function (v) {
+      if (S.roomBusy || JSON.stringify(v) === JSON.stringify(S.room)) return;
+      setRoom(v); if (S.view === 'main') render();
+    }, function () { /* 조용히 */ });
+  }
+
+  function condSummary(c) {
+    var p = PRICE_OPTS.filter(function (x) { return x.id === c.priceId; })[0];
+    var parts = [];
+    if (p && p.id !== 'any') parts.push(['가격', p.label]);
+    [['cats', '카테고리'], ['drinks', '술'], ['tastes', '맛'], ['forms', '조리'], ['mains', '재료']].forEach(function (k) { if ((c[k[0]] || []).length) parts.push([k[1], c[k[0]].join('·')]); });
+    return parts.length ? parts.map(function (x) { return x[0] + ' ' + x[1]; }).join(' / ') : '상관없음 (제한 없음)';
+  }
+
+  function tabRoom() {
+    var wrap = h('div', null), R = S.room, room = R && R.room;
+    if (S.members.length < 2) {
+      wrap.appendChild(h('div', { class: 'panel', style: 'background:var(--accent-tint)' }, h('h2', null, '같이 정하기'),
+        h('p', { style: 'margin:0;font-size:14px' }, '배우자가 초대 코드 ', h('b', { class: 'mono' }, S.household.code), ' 로 합류하면, 각자 조건을 고르고 같이 뽑는 방을 쓸 수 있어요.')));
+      return wrap;
+    }
+    if (!room || room.phase === 'closed') {
+      if (room && room.phase === 'closed') wrap.appendChild(roomClosedCard(room));
+      wrap.appendChild(h('div', { class: 'panel' }, h('h2', null, '같이 정하기'),
+        h('p', { style: 'margin:0 0 6px;font-size:15px' }, '각자 원하는 조건을 고르고 “준비완료”를 누르면, 모두 준비됐을 때 방장이 메뉴를 뽑아요.'),
+        h('p', { class: 'note', style: 'margin:0 0 12px' }, '준비 전에는 서로의 선택이 보이지 않아요. 다시 뽑을 때마다 “N번째 뽑는 중”이 모두에게 표시돼요. 방은 6시간 뒤 자동으로 닫혀요.'),
+        h('button', { class: 'cta', disabled: S.roomBusy, onclick: function () { roomCall('POST', '/api/room').catch(function () {}); } }, room ? '새 방 만들기' : '방 만들기')));
+      return wrap;
+    }
+    var me = roomMe(), isHost = room.hostUid === S.me.uid;
+    wrap.appendChild(roomHeader(R, isHost));
+    if (!me.joined) {
+      wrap.appendChild(h('div', { class: 'panel' }, h('p', { style: 'margin:0 0 10px;font-size:15px' }, nameOf(room.hostUid) + '님이 방을 열었어요. 참여하면 각자 조건을 고를 수 있어요.'),
+        h('button', { class: 'cta', disabled: S.roomBusy, onclick: function () { roomCall('POST', '/api/room/join').catch(function () {}); } }, '참여하기')));
+      return wrap;
+    }
+    if (room.phase === 'setup') {
+      wrap.appendChild(roomSettingsPanel(R, isHost));
+      wrap.appendChild(roomCondPanel(R, me));
+      if (R.allReady) wrap.appendChild(roomAllCondsPanel(R));
+      wrap.appendChild(roomPickBar(R, isHost));
+    } else { // picked
+      wrap.appendChild(roomResultCard(R, isHost, me));
+      var m = room.result && MENU_BY_ID[room.result.menuId];
+      if (m) wrap.appendChild(restaurantPanel(m));
+    }
+    return wrap;
+  }
+
+  function roomHeader(R, isHost) {
+    var room = R.room;
+    return h('div', { class: 'panel' }, h('h2', null, '같이 정하기 · 방장 ' + nameOf(room.hostUid) + (isHost ? ' (나)' : '')),
+      h('div', { class: 'chips' }, R.members.map(function (m) {
+        var label = nameOf(m.uid) + ' · ' + (!m.joined ? '미참여' : room.phase === 'picked' ? '참여 중' : m.ready ? '준비완료' : '준비 중');
+        return h('span', { class: 'chip sm static' + (m.ready ? ' like' : '') }, (m.ready ? '✔ ' : '') + label);
+      })));
+  }
+
+  function roomSettingsPanel(R, isHost) {
+    var room = R.room, joined = R.members.filter(function (m) { return m.joined; });
+    var whoOpts = [{ v: 'all', label: joined.length === 2 ? '둘의 교집합' : '모두의 교집합' }].concat(joined.map(function (m) { return { v: m.uid, label: nameOf(m.uid) + '님에게 맞춰서' }; }));
+    var whoLabel = (whoOpts.filter(function (o) { return o.v === room.who; })[0] || whoOpts[0]).label;
+    var box = h('div', { class: 'panel' }, h('h2', null, '방 설정' + (isHost ? ' (방장)' : '')));
+    if (isHost) {
+      box.appendChild(h('div', { class: 'group' }, h('p', { class: 'group-label' }, '누구 취향으로?'),
+        h('div', { class: 'chips' }, whoOpts.map(function (o) {
+          return h('button', { type: 'button', class: 'chip' + (room.who === o.v ? ' active' : ''), disabled: S.roomBusy, onclick: function () { roomCall('PUT', '/api/room/settings', { who: o.v }).catch(function () {}); } }, o.label);
+        }))));
+      box.appendChild(h('div', { class: 'group' }, h('p', { class: 'group-label' }, '인원'),
+        h('div', { class: 'stepper' },
+          h('button', { type: 'button', 'aria-label': '인원 줄이기', disabled: room.headcount <= 1 || S.roomBusy, onclick: function () { roomCall('PUT', '/api/room/settings', { headcount: room.headcount - 1 }).catch(function () {}); } }, '−'),
+          h('b', null, room.headcount + '명'),
+          h('button', { type: 'button', 'aria-label': '인원 늘리기', disabled: room.headcount >= 6 || S.roomBusy, onclick: function () { roomCall('PUT', '/api/room/settings', { headcount: room.headcount + 1 }).catch(function () {}); } }, '+'))));
+    } else {
+      box.appendChild(h('p', { class: 'note', style: 'margin:0' }, '누구 취향으로: ' + whoLabel + ' · 인원 ' + room.headcount + '명 (방장이 정해요)'));
+    }
+    return box;
+  }
+
+  function roomCondPanel(R, me) {
+    var d = S.roomDraft, locked = me.ready, src = locked && me.cond ? me.cond : d;
+    var has = function (key) { return function (v) { return (src[key] || []).indexOf(v) !== -1; }; };
+    var tog = function (key) { return function (v) { toggle(d[key], v); saveDraft(); render(); }; };
+    var box = h('div', { class: 'panel' }, h('h2', null, '내 조건' + (locked ? ' · 준비완료' : '')),
+      chipGroup('인당 가격', '배달비 제외', PRICE_OPTS.map(function (p) { return { value: p.id, label: p.label }; }), function (v) { return src.priceId === v; }, function (v) { d.priceId = v; saveDraft(); render(); }, locked),
+      chipGroup('카테고리', '식사는 고르면 포함돼요', DM.CATEGORIES.map(function (x) { return { value: x, label: x === DM.MEAL ? '식사 · 마무리' : x }; }), has('cats'), tog('cats'), locked),
+      chipGroup('곁들일 술', '둘이 고른 술 중 하나라도 어울리면 후보', opts(DM.DRINKS), has('drinks'), tog('drinks'), locked),
+      chipGroup('맛', '고른 것 중 하나라도', opts(DM.TASTES), has('tastes'), tog('tastes'), locked),
+      chipGroup('조리 방식', null, opts(DM.FORMS), has('forms'), tog('forms'), locked),
+      chipGroup('재료', null, opts(DM.MAINS), has('mains'), tog('mains'), locked));
+    if (locked) {
+      box.appendChild(h('button', { class: 'btn block', disabled: S.roomBusy, onclick: function () {
+        var c = me.cond; // 방금 낸 조건을 그대로 다시 고를 수 있게 채워둔다
+        if (c) { S.roomDraft = { priceId: c.priceId || 'any', cats: c.cats.slice(), drinks: c.drinks.slice(), tastes: c.tastes.slice(), forms: c.forms.slice(), mains: c.mains.slice() }; saveDraft(); }
+        roomCall('PUT', '/api/room/me', { ready: false }).catch(function () {});
+      } }, '준비 취소 (조건 다시 고르기)'));
+    } else {
+      box.appendChild(h('button', { class: 'cta', disabled: S.roomBusy, onclick: function () { roomCall('PUT', '/api/room/me', { cond: draftToCond(d), ready: true }).catch(function () {}); } }, '준비완료'));
+      box.appendChild(h('p', { class: 'note' }, '아무것도 안 고른 항목은 제한 없이 맞춰요. 준비완료 후에는 수정이 잠기고, 모두 준비하기 전까지 상대에겐 보이지 않아요.'));
+    }
+    return box;
+  }
+
+  function roomAllCondsPanel(R) {
+    return h('div', { class: 'panel' }, h('h2', null, '각자 고른 조건 (공개)'),
+      R.members.filter(function (m) { return m.joined && m.cond; }).map(function (m) {
+        return h('p', { class: 'note', style: 'margin:0 0 6px;color:var(--ink)' }, h('b', null, nameOf(m.uid) + ': '), condSummary(m.cond));
+      }),
+      h('p', { class: 'note' }, '술은 둘이 고른 술 중 하나라도 어울리면 후보예요. 나머지는 모두의 조건을 만족하는 메뉴만 나와요.'));
+  }
+
+  function roomPickBar(R, isHost) {
+    var room = R.room, box = h('div', { class: 'panel' });
+    if (S.roomMsg) box.appendChild(h('div', { class: 'err', role: 'status' }, S.roomMsg));
+    if (!R.allReady) {
+      box.appendChild(h('button', { class: 'cta', disabled: true }, '모두 준비완료가 되면 뽑을 수 있어요'));
+      var waiting = R.members.filter(function (m) { return m.joined && !m.ready; }).map(function (m) { return nameOf(m.uid); });
+      var notJoined = R.members.filter(function (m) { return !m.joined; }).length;
+      box.appendChild(h('p', { class: 'note' }, waiting.length ? waiting.join(', ') + '님이 준비하는 중이에요.' : (notJoined ? '아직 참여하지 않은 분이 있어요.' : '')));
+    } else if (isHost) {
+      box.appendChild(h('button', { class: 'cta', disabled: S.roomBusy, onclick: function () { roomPickNow(); } }, '메뉴 뽑기!'));
+    } else {
+      box.appendChild(h('p', { style: 'margin:0;text-align:center;font-family:var(--f-sub);font-size:17px' }, h('span', { class: 'spinner' }), '방장 ' + nameOf(room.hostUid) + '님이 뽑기를 누르길 기다리는 중…'));
+    }
+    return box;
+  }
+
+  // 방장 폰에서 계산하고 결과만 서버에 저장한다(횟수는 서버가 센다). 이번 라운드에 이미 나온 메뉴는 다시 안 나온다.
+  function roomPickNow() {
+    S.roomBusy = true; S.roomMsg = ''; render();
+    refresh().then(function () { return api('GET', '/api/room'); }).then(function (v) {
+      var room = v.room, joined = v.members.filter(function (m) { return m.joined; });
+      if (!room || !v.allReady) { setRoom(v); S.roomBusy = false; render(); toast('아직 모두 준비되지 않았어요'); return; }
+      var conds = joined.map(function (m) { return { uid: m.uid, cond: m.cond }; });
+      var prefMembers = (room.who === 'all' ? joined.map(function (m) { return m.uid; }) : [room.who]);
+      var members = S.members.filter(function (m) { return prefMembers.indexOf(m.uid) !== -1; }).map(function (m) { return { uid: m.uid, name: m.name, prefs: m.prefs }; });
+      var exclude = {}; (room.history || []).forEach(function (h2) { exclude[h2.menuId] = true; });
+      var run = function (ex) {
+        return Core.recommendRoom({ menus: MENUS, headcount: room.headcount, conds: conds, members: members, history: S.history, exclude: ex, count: 1,
+          settings: { recentDays: settings().recentDays, priceMul: settings().priceMul } });
+      };
+      var r = run(exclude);
+      if (!r.picks.length && Object.keys(exclude).length) r = run({}); // 후보를 다 보여줬으면 처음부터
+      if (!r.picks.length) {
+        S.roomBusy = false; setRoom(v);
+        S.roomMsg = '둘 다 만족하는 메뉴가 없어요. ' + (r.diag || []).map(function (d) { return nameOf(d.uid) + '님 조건만이면 ' + d.alone + '개'; }).join(', ') + ' — 겹치는 게 0개예요. “조건 다시 정하기”로 조건을 조금 풀어보세요.' +
+          (r.stats && r.stats.afterFilter > 0 && r.stats.afterRecent === 0 ? ' (최근 먹은 메뉴 제외 때문일 수도 있어요)' : '');
+        if (room.phase === 'picked') toast('조건에 맞는 다른 메뉴가 없어요');
+        render(); return;
+      }
+      var p = r.picks[0];
+      return api('POST', '/api/room/pick', { menuId: p.menu.id, perPerson: p.perPerson, reasons: p.reasons }).then(function (nv) { S.roomBusy = false; setRoom(nv); render(); window.scrollTo(0, 0); });
+    }).catch(function (e) { S.roomBusy = false; pollRoom(); render(); fail(e); });
+  }
+
+  function roomResultCard(R, isHost, me) {
+    var room = R.room, rs = room.result, m = MENU_BY_ID[rs.menuId];
+    var requests = R.members.filter(function (x) { return x.reroll; });
+    var card = h('div', { class: 'result' },
+      h('span', { class: 'kicker' }, '오늘의 저녁픽'),
+      h('span', { class: 'result-emoji', 'aria-hidden': 'true' }, m ? m.emoji : '🍽️'),
+      h('h2', { class: 'result-name' }, m ? m.name : rs.menuId),
+      m ? h('p', { class: 'result-meta' }, m.cat + ' · ' + m.sub + (m.type === 'share' ? ' · 권장 ' + Core.servesText(m) : '')) : null,
+      h('div', { class: 'price-badge' }, '인당 약 ' + won(rs.perPerson)),
+      m ? h('div', { class: 'tags' }, m.tags.map(function (t) { return h('span', { class: 'tag' }, '#' + t); })) : null,
+      h('p', { class: 'why-title' }, '왜 이 메뉴?'),
+      h('ul', { class: 'why' }, rs.reasons.map(function (x) { return h('li', null, x.text); })));
+    if (requests.length) {
+      card.appendChild(h('div', { class: 'req' }, requests.map(function (x) { return h('div', null, '🙋 ' + nameOf(x.uid) + '님이 다시 뽑자고 해요'); })));
+    }
+    if (isHost) {
+      card.appendChild(h('div', { class: 'btn-row' },
+        h('button', { class: 'btn', disabled: S.roomBusy, onclick: function () { roomPickNow(); } }, ico('shuffle'), '다시 뽑기'),
+        h('button', { class: 'btn pink', disabled: S.roomBusy, onclick: roomConfirm }, ico('check-circle'), '이걸로 먹을래요')));
+      card.appendChild(h('p', { style: 'margin:10px 0 0' }, h('button', { class: 'link-btn', onclick: function () {
+        if (window.confirm('모두의 준비가 풀리고 횟수/지난 후보가 초기화돼요. 조건을 다시 정할까요?')) roomCall('POST', '/api/room/reset').catch(function () {});
+      } }, '조건 다시 정하기')));
+    } else {
+      card.appendChild(h('div', { class: 'btn-row' },
+        h('button', { class: 'btn', disabled: S.roomBusy || me.reroll, onclick: function () { roomCall('PUT', '/api/room/me', { reroll: true }).then(function () { toast('방장에게 다시 뽑자고 전했어요'); }).catch(function () {}); } },
+          me.reroll ? '요청했어요 ✓' : '🙋 다시 뽑자고 의견 내기')));
+      card.appendChild(h('p', { class: 'note' }, '뽑기는 방장만 할 수 있어요. 의견은 방장 화면에 표시돼요.'));
+    }
+    // 공정성: 다시 뽑기를 누르면 몇 번째 뽑는 중인지 모두에게 보인다 (결과 카드 하단)
+    if (rs.n >= 2) card.appendChild(h('div', { class: 'pick-count', role: 'status' }, rs.n + '번째 뽑는 중'));
+    if ((room.history || []).length >= 2) {
+      card.appendChild(h('details', { class: 'hist' }, h('summary', null, '지난 후보 ' + (room.history.length - 1) + '개 보기'),
+        h('ol', null, room.history.map(function (x) { var mm = MENU_BY_ID[x.menuId]; return h('li', null, x.n + '번째 · ' + (mm ? mm.emoji + ' ' + mm.name : x.menuId) + (x.n === rs.n ? ' (지금)' : '')); }))));
+    }
+    return card;
+  }
+
+  function roomConfirm() {
+    var R = S.room, rs = R && R.room && R.room.result, m = rs && MENU_BY_ID[rs.menuId]; if (!m) return;
+    S.roomBusy = true; render();
+    api('POST', '/api/history', { menuId: m.id, name: m.name, cat: m.cat, rest: S.chosenRest ? S.chosenRest.name : '' })
+      .then(function () { return api('POST', '/api/room/close', { menuId: m.id }); })
+      .then(function (v) { setRoom(v); return refresh(); })
+      .then(function () { S.roomBusy = false; toast('기록했어요! ' + settings().recentDays + '일 동안은 다시 안 나와요'); render(); },
+        function (e) { S.roomBusy = false; pollRoom(); render(); fail(e); });
+  }
+
+  function roomClosedCard(room) {
+    var m = room.finalMenuId && MENU_BY_ID[room.finalMenuId];
+    return h('div', { class: 'panel', style: 'background:var(--accent-tint)' }, h('h2', null, '지난 방'),
+      h('p', { style: 'margin:0;font-size:16px;font-family:var(--f-sub)' }, m ? '확정: ' + m.emoji + ' ' + m.name + ' (' + room.pickCount + '번째 뽑기)' : '확정 없이 닫혔어요'),
+      h('p', { class: 'note', style: 'margin:6px 0 0' }, m ? '먹은 기록에 저장됐어요.' : ''));
   }
 
   // ---- 기록 탭
@@ -707,6 +960,13 @@
       S.view = 'auth'; S.error = e.message; render();
     });
   }
-  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible' && S.view === 'main') refreshQuiet(); });
+  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible' && S.view === 'main') { refreshQuiet(); pollRoom(); } });
+  // 같이 탭이 열려 있으면 4초마다, 다른 탭이면 약 30초마다 방 상태를 확인한다 (KV 읽기 한도를 아끼려고)
+  var pollTick = 0;
+  setInterval(function () {
+    pollTick++;
+    if (!S.token || !S.me || S.view !== 'main' || document.visibilityState !== 'visible') return;
+    if (S.tab === 'room' || pollTick % 8 === 0) pollRoom();
+  }, 4000);
   boot();
 })();

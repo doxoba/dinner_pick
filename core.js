@@ -39,19 +39,20 @@
     var base = menu.type === 'each' ? menu.price : menu.price / Math.max(1, headcount);
     return Math.round((base * mul) / 100) * 100;
   }
+  function servesText(m) { return m.serves[0] === m.serves[1] ? m.serves[0] + '인분' : m.serves[0] + '~' + m.serves[1] + '인분'; }
   function fitsHeadcount(menu, n) {
     return menu.type === 'each' || (n >= menu.serves[0] && n <= menu.serves[1]);
   }
 
   // ---------------------------------------------------------------- 하드 필터
-  function matchesCond(menu, cond, priceMul) {
+  function matchesCond(menu, cond, priceMul, mealOk) {
     var n = cond.headcount || 2;
     if (!fitsHeadcount(menu, n)) return false;
     var pp = perPerson(menu, n, priceMul);
     if (cond.priceMin != null && pp < cond.priceMin) return false;
     if (cond.priceMax != null && pp > cond.priceMax) return false;
     var cats = cond.cats || [];
-    if (menu.cat === MEAL_CAT) { if (cats.indexOf(MEAL_CAT) === -1) return false; }   // 식사는 직접 고른 경우에만
+    if (menu.cat === MEAL_CAT) { if (cats.indexOf(MEAL_CAT) === -1 && !(mealOk && cats.length === 0)) return false; }   // 식사는 직접 고른 경우에만(방에서는 누군가 골랐고 나는 상관없을 때도 통과)
     else if (cats.length && cats.indexOf(menu.cat) === -1) return false;
     if (!anyOf(cond.tastes, menu.tags) || !anyOf(cond.forms, menu.tags) || !anyOf(cond.mains, menu.tags)) return false;
     if (!anyOf(cond.drinks, menu.drinks || [])) return false;
@@ -145,7 +146,7 @@
 
     menus.forEach(function (menu) {
       if (opts.exclude && opts.exclude[menu.id]) return; // "다시 뽑기"에서 이미 보여준 메뉴
-      if (!matchesCond(menu, cond, mul)) return;
+      if (!(opts.matcher ? opts.matcher(menu, mul) : matchesCond(menu, cond, mul))) return;
       stats.afterFilter++;
       var lastAt = lastByKw[menu.kw];
       var daysAgo = lastAt == null ? null : Math.floor((now - lastAt) / DAY);
@@ -232,6 +233,55 @@
     return { picks: picks, stats: c.stats, suggest: suggest };
   }
 
+  // ---------------------------------------------------------------- 방 모드 (각자 조건을 고르고 → 합쳐서 한 번에 뽑기)
+  // 합치는 규칙: 가격 · 카테고리 · 맛 · 조리 · 재료 = "각자의 조건을 모두 만족"(교집합), 술 = "누군가 고른 술 중 하나라도"(합집합).
+  // 아무것도 안 고른 항목은 그 사람에게는 제한 없음. 인원은 방 전체가 하나(headcount).
+  function unionOf(cs, key) {
+    var out = [];
+    cs.forEach(function (c) { (c[key] || []).forEach(function (v) { if (out.indexOf(v) === -1) out.push(v); }); });
+    return out;
+  }
+  function mergeConds(headcount, conds) {
+    var cs = conds.map(function (c) { return c.cond || {}; });
+    var mins = cs.map(function (c) { return c.priceMin; }).filter(function (v) { return v != null; });
+    var maxs = cs.map(function (c) { return c.priceMax; }).filter(function (v) { return v != null; });
+    return {
+      headcount: headcount,
+      priceMin: mins.length ? Math.max.apply(null, mins) : null,   // 가격대는 겹치는 구간
+      priceMax: maxs.length ? Math.min.apply(null, maxs) : null,
+      cats: unionOf(cs, 'cats'), tastes: unionOf(cs, 'tastes'), forms: unionOf(cs, 'forms'), mains: unionOf(cs, 'mains'), drinks: unionOf(cs, 'drinks')
+    };
+  }
+  function roomMatcher(headcount, conds) {
+    var cs = conds.map(function (c) { return c.cond || {}; });
+    var mealOk = cs.some(function (c) { return (c.cats || []).indexOf(MEAL_CAT) !== -1; });
+    var drinks = unionOf(cs, 'drinks');
+    return function (menu, mul) {
+      for (var i = 0; i < cs.length; i++) {
+        if (!matchesCond(menu, Object.assign({}, cs[i], { headcount: headcount, drinks: [] }), mul, mealOk)) return false; // 술은 아래에서 합집합으로
+      }
+      return !drinks.length || anyOf(drinks, menu.drinks || []);
+    };
+  }
+  /**
+   * opts: { menus, headcount, conds:[{uid, cond}], members:[{uid,name,prefs}] (취향 반영 대상), history, settings, now, rng, exclude }
+   * 반환: recommend()와 같고, 후보가 없으면 diag: [{uid, alone, without}] — 그 사람 조건만이면 몇 개 / 그 사람 조건을 빼면 몇 개
+   */
+  function recommendRoom(opts) {
+    var cond = mergeConds(opts.headcount, opts.conds);
+    var base = Object.assign({}, opts, { cond: cond, count: opts.count || 1 });
+    var r = recommend(Object.assign({}, base, { matcher: roomMatcher(opts.headcount, opts.conds) }));
+    r.merged = cond;
+    if (!r.picks.length) {
+      r.diag = opts.conds.map(function (me, i) {
+        var others = opts.conds.filter(function (_, j) { return j !== i; });
+        var count = function (conds) { return collect(Object.assign({}, base, { matcher: roomMatcher(opts.headcount, conds) }), cond).cands.length; };
+        return { uid: me.uid, alone: count([me]), without: others.length ? count(others) : 0 };
+      });
+    }
+    return r;
+  }
+
   // ---------------------------------------------------------------- 이유 문장
   function rawLabel(raw) {
     if (raw >= 0.95) return '우승';
@@ -307,7 +357,7 @@
     }
 
     // 6) 양
-    if (menu.type === 'share') reasons.push({ k: 'size', text: n + '명이 먹기 적당한 양이에요 (권장 ' + menu.serves[0] + '~' + menu.serves[1] + '인분)' });
+    if (menu.type === 'share') reasons.push({ k: 'size', text: n + '명이 먹기 적당한 양이에요 (권장 ' + servesText(menu) + ')' });
     return reasons;
   }
 
@@ -436,9 +486,9 @@
   }
 
   return {
-    perPerson: perPerson, fitsHeadcount: fitsHeadcount, matchesCond: matchesCond, fmtWon: fmtWon,
+    perPerson: perPerson, servesText: servesText, fitsHeadcount: fitsHeadcount, matchesCond: matchesCond, fmtWon: fmtWon,
     explicitScores: explicitScores, userScore: userScore, makeMemberCtx: makeMemberCtx,
-    recommend: recommend, summarizePrefs: summarizePrefs,
+    recommend: recommend, recommendRoom: recommendRoom, mergeConds: mergeConds, summarizePrefs: summarizePrefs,
     wcPick: wcPick, wcNew: wcNew, wcMatch: wcMatch, wcChoose: wcChoose, wcRoundName: wcRoundName, wcReplay: wcReplay, wcUndo: wcUndo,
     wcProgress: wcProgress, wcScores: wcScores, wcGroups: wcGroups
   };

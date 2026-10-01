@@ -423,3 +423,68 @@ test('새 조리 방식(꼬치·조림·마른안주·플래터·간식) 필터'
   assert.ok(pickAll({ forms: ['플래터'] }).some((p) => p.menu.id === 'cheese-plate'));
   assert.ok(pickAll({ forms: ['조림'] }).some((p) => p.menu.id === 'godeungeo-jorim'));
 });
+
+// ---------------------------------------------------------------- 방 모드 (각자 조건 → 합쳐서 뽑기)
+const rc = (o = {}) => ({ priceId: 'any', priceMin: null, priceMax: null, cats: [], tastes: [], forms: [], mains: [], drinks: [], ...o });
+const room = (conds, extra = {}) => Core.recommendRoom({ menus: MENUS, headcount: 2, conds, members: [me, hubby], history: [], now: NOW, rng: seeded(8), count: 500, ...extra });
+
+test('방: 술은 합집합 — 한 명은 막걸리, 한 명은 와인이면 둘 중 어느 쪽에 어울려도 후보', () => {
+  const r = room([{ uid: 'a', cond: rc({ drinks: ['막걸리'] }) }, { uid: 'b', cond: rc({ drinks: ['와인'] }) }]);
+  const ids = r.picks.map((p) => p.menu.id);
+  assert.ok(r.picks.every((p) => p.menu.drinks.some((d) => ['막걸리', '와인'].includes(d))));
+  assert.ok(ids.includes('haemul-pajeon'), '막걸리 안주');
+  assert.ok(ids.includes('bruschetta'), '와인 안주');
+  assert.equal(r.merged.drinks.join(), '막걸리,와인');
+  // 한 명만 술을 골랐으면 그 술 기준 (안 고른 사람은 제한 없음)
+  const one = room([{ uid: 'a', cond: rc({ drinks: ['막걸리'] }) }, { uid: 'b', cond: rc() }]);
+  assert.ok(one.picks.length > 5 && one.picks.every((p) => p.menu.drinks.includes('막걸리')));
+});
+
+test('방: 가격·카테고리·맛·조리·재료는 각자의 조건을 모두 만족(교집합)', () => {
+  const cat = room([{ uid: 'a', cond: rc({ cats: ['한식', '일식'] }) }, { uid: 'b', cond: rc({ cats: ['일식', '중식'] }) }]);
+  assert.ok(cat.picks.length > 5 && cat.picks.every((p) => p.menu.cat === '일식'));
+  const price = room([{ uid: 'a', cond: rc({ priceMax: 15000 }) }, { uid: 'b', cond: rc({ priceMin: 10000 }) }]);
+  assert.ok(price.picks.length > 5 && price.picks.every((p) => p.perPerson >= 10000 && p.perPerson <= 15000));
+  assert.equal(price.merged.priceMin, 10000); assert.equal(price.merged.priceMax, 15000);
+  const form = room([{ uid: 'a', cond: rc({ forms: ['튀김'] }) }, { uid: 'b', cond: rc({ forms: ['구이', '찜'] }) }]);
+  assert.ok(form.picks.every((p) => p.menu.tags.includes('튀김') && (p.menu.tags.includes('구이') || p.menu.tags.includes('찜'))));
+  const taste = room([{ uid: 'a', cond: rc({ tastes: ['매운맛'] }) }, { uid: 'b', cond: rc({ mains: ['해산물'] }) }]);
+  assert.ok(taste.picks.every((p) => p.menu.tags.includes('매운맛') && p.menu.tags.includes('해산물')));
+});
+
+test('방: 식사 — 한 명이 골랐고 다른 한 명이 카테고리를 안 골랐으면 식사만, 다른 카테고리를 골랐으면 충돌', () => {
+  const ok = room([{ uid: 'a', cond: rc({ cats: [MEAL] }) }, { uid: 'b', cond: rc() }]);
+  assert.ok(ok.picks.length > 10 && ok.picks.every((p) => p.menu.cat === MEAL));
+  const clash = room([{ uid: 'a', cond: rc({ cats: [MEAL] }) }, { uid: 'b', cond: rc({ cats: ['한식'] }) }]);
+  assert.equal(clash.picks.length, 0);
+  const none = room([{ uid: 'a', cond: rc() }, { uid: 'b', cond: rc() }]);
+  assert.ok(none.picks.every((p) => p.menu.cat !== MEAL));
+});
+
+test('방: 후보가 없으면 누구 조건 때문인지 진단한다', () => {
+  const r = room([{ uid: 'a', cond: rc({ cats: ['분식'] }) }, { uid: 'b', cond: rc({ cats: ['중식'] }) }]);
+  assert.equal(r.picks.length, 0);
+  const a = r.diag.find((d) => d.uid === 'a'), b = r.diag.find((d) => d.uid === 'b');
+  assert.ok(a.alone > 0 && b.alone > 0, '각자 조건만으로는 후보가 있다');
+  assert.equal(a.without, b.alone); assert.equal(b.without, a.alone);
+});
+
+test('방: 한 번에 하나만 뽑고(count 기본 1), exclude/기록/취향(who)이 그대로 적용된다', () => {
+  const one = Core.recommendRoom({ menus: MENUS, headcount: 2, conds: [{ uid: 'a', cond: rc() }, { uid: 'b', cond: rc() }], members: [me], history: [], now: NOW, rng: seeded(9) });
+  assert.equal(one.picks.length, 1);
+  const wifeOnly = { uid: 'a', name: '나', prefs: { scores: { malatang: 1 } } };
+  const hateful = { uid: 'b', name: '남편', prefs: { scores: { malatang: -1 } } };
+  const both = room([{ uid: 'a', cond: rc() }, { uid: 'b', cond: rc() }], { members: [wifeOnly, hateful] });
+  assert.ok(!both.picks.some((p) => p.menu.id === 'malatang'), '교집합 취향: 남편이 싫어하면 제외');
+  const mine = room([{ uid: 'a', cond: rc() }, { uid: 'b', cond: rc() }], { members: [wifeOnly] });
+  assert.ok(mine.picks.some((p) => p.menu.id === 'malatang'), '내 취향으로: 나오는 메뉴');
+  const ex = room([{ uid: 'a', cond: rc() }, { uid: 'b', cond: rc() }], { exclude: { 'chicken-fried': true } });
+  assert.ok(!ex.picks.some((p) => p.menu.id === 'chicken-fried'));
+});
+
+test('권장 인원 표기: 범위가 같으면 "2인분", 다르면 "2~3인분"', () => {
+  assert.equal(Core.servesText(byId['dakbokkeum-m']), '2~3인분');
+  assert.equal(Core.servesText(byId['dakbal']), '2인분');
+  const r = Core.recommend({ menus: MENUS.filter((m) => m.id === 'dakbal'), cond: baseCond, members: [me], history: [], now: NOW, rng: seeded(1), count: 1 });
+  assert.match(r.picks[0].reasons.map((x) => x.text).join('/'), /권장 2인분/);
+});

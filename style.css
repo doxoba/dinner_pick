@@ -144,3 +144,11 @@ label.field > span{display:block;font-family:var(--f-sub);font-size:14px;margin-
 .spinner{display:inline-block;width:16px;height:16px;border:3px solid var(--ink);border-top-color:var(--pink);border-radius:50%;animation:spin .7s linear infinite;vertical-align:-3px;margin-right:6px;}
 @keyframes spin{to{transform:rotate(360deg);}}
 .code-box{font-family:var(--f-mono);font-size:22px;letter-spacing:.25em;background:var(--accent-tint);border:2px dashed var(--ink);border-radius:var(--r-md);padding:8px 14px;display:inline-block;}
+
+/* ---- 같이(방) ---- */
+.chip:disabled{opacity:.55;cursor:not-allowed;} .chip.active:disabled{opacity:.85;}
+.tabbar button{position:relative;}
+.tabbar .dot{position:absolute;top:8px;right:calc(50% - 22px);width:10px;height:10px;border-radius:50%;background:var(--pink);border:2px solid var(--ink);}
+.pick-count{margin:16px 0 0;padding:10px 14px;border:2px solid var(--ink);border-radius:var(--r-md);background:var(--accent);text-align:center;font-family:var(--f-display);font-size:20px;}
+.req{margin:0 0 12px;padding:10px 12px;border:2px dashed var(--pink);border-radius:var(--r-md);font-family:var(--f-sub);font-size:15px;color:var(--pink-dark);}
+.hist{margin-top:12px;font-size:13px;} .hist summary{cursor:pointer;font-family:var(--f-mono);font-size:11px;color:var(--text-muted);} .hist ol{margin:8px 0 0;padding-left:20px;line-height:1.7;}
