@@ -1,0 +1,9 @@
+{
+  "name": "dinner-pick",
+  "private": true,
+  "description": "저녁픽 — 부부를 위한 저녁(배달) 메뉴 추천",
+  "scripts": {
+    "dev": "node dev/server.mjs 8000",
+    "test": "node --test test/*.test.mjs"
+  }
+}

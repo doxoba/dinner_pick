@@ -1,0 +1,13 @@
+# Cloudflare Worker 배포 설정 (npx wrangler deploy)
+name = "dinner-pick"
+main = "worker/worker.mjs"
+compatibility_date = "2026-09-01"
+
+[[kv_namespaces]]
+binding = "DP"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"   # npx wrangler kv namespace create DP 로 만든 id
+
+# 선택: 가입을 막아두려면 (권장)  npx wrangler secret put SIGNUP_CODE
+# 선택: CORS를 좁히려면 아래 주석 해제
+# [vars]
+# ALLOWED_ORIGIN = "https://doxoba.github.io"
