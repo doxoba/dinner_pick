@@ -250,9 +250,9 @@
       var likers = [], neutral = [];
       members.forEach(function (mc, i) { (cand.per[i].score >= 0.4 ? likers : neutral).push(mc.name); });
       var head;
-      if (likers.length === members.length) head = (members.length > 1 ? '두 분 모두' : likers[0] + '님') + ' 취향에 잘 맞아요';
+      if (likers.length === members.length) head = (members.length === 2 ? '두 분 모두' : members.length > 2 ? '모두' : likers[0] + '님') + ' 취향에 잘 맞아요';
       else if (likers.length) head = likers.join('·') + '님 취향 저격, ' + neutral.join('·') + '님도 거부감 없는 메뉴예요';
-      else head = '모두에게 무난한 메뉴예요';
+      else head = members.length === 1 ? members[0].name + '님에게 무난한 메뉴예요' : '모두에게 무난한 메뉴예요';
       var details = [];
       members.forEach(function (mc, i) {
         if (cand.per[i].score < 0.4) return;

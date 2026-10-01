@@ -73,7 +73,7 @@
     view: 'boot', tab: 'pick', token: store.get('dp_token') || '', error: '', busy: false,
     authMode: 'login', authDraft: { hm: 'create' },
     me: null, household: null, members: [], history: [],
-    cond: null, result: null, shown: {}, ignoreRecent: false, rest: { status: 'idle' }, chosenRest: null,
+    cond: null, who: 'all', result: null, shown: {}, ignoreRecent: false, rest: { status: 'idle' }, chosenRest: null,
     wc: null, wcStage: 'intro'
   };
 
@@ -120,16 +120,24 @@
       }
     } catch (e) { /* 무시 */ }
     S.cond = c;
+    S.who = store.get('dp_who') || 'all'; // 'all' = 교집합, 아니면 그 사람(uid)의 취향만
   }
   function saveCond() { store.set('dp_cond', JSON.stringify(S.cond)); }
   function condForCore() {
     var p = PRICE_OPTS.filter(function (x) { return x.id === S.cond.priceId; })[0];
     return { headcount: S.cond.headcount, priceMin: p.min, priceMax: p.max, cats: S.cond.cats, tastes: S.cond.tastes, forms: S.cond.forms };
   }
+  // 누구 취향으로 뽑을지: 'all'이면 가구 전원의 교집합, 특정 uid면 그 사람 취향만(상대가 싫어하는 메뉴도 나올 수 있다)
+  function activeMembers() {
+    if (S.who === 'all') return S.members;
+    var one = S.members.filter(function (m) { return m.uid === S.who; });
+    return one.length ? one : S.members;
+  }
+  function setWho(v) { S.who = v; store.set('dp_who', v); S.shown = {}; S.ignoreRecent = false; render(); }
   function rcOpts(count) {
     return {
       menus: MENUS, cond: condForCore(), count: count,
-      members: S.members.map(function (m) { return { uid: m.uid, name: m.name, prefs: m.prefs }; }),
+      members: activeMembers().map(function (m) { return { uid: m.uid, name: m.name, prefs: m.prefs }; }),
       history: S.history, exclude: S.shown,
       settings: { recentDays: S.ignoreRecent ? 0 : settings().recentDays, priceMul: settings().priceMul }
     };
@@ -323,7 +331,13 @@
   }
   function switchTab(t) {
     S.tab = t; render(); window.scrollTo(0, 0);
-    if (t !== 'pick') refresh().then(render, function () { /* 조용히 */ }); // 배우자가 남긴 평가/취향 반영
+    refreshQuiet(); // 배우자가 합류했거나 평가/취향을 남겼다면 반영
+  }
+  // 서버 데이터가 실제로 바뀐 경우에만 다시 그린다(입력 중인 폼이 날아가지 않게)
+  function refreshQuiet() {
+    if (!S.token || !S.me) return Promise.resolve();
+    var snap = function () { return JSON.stringify([S.members, S.history, S.household]); }, before = snap();
+    return refresh().then(function () { if (snap() !== before && S.view === 'main') render(); }, function () { /* 조용히 */ });
   }
   function viewMain() {
     var wrap = h('div', null, header());
@@ -342,14 +356,32 @@
   }
   function opts(arr) { return arr.map(function (x) { return { value: x, label: x }; }); }
 
+  function whoGroup() {
+    if (S.members.length < 2) return null;
+    var active = activeMembers(), single = active.length === 1 ? active[0] : null;
+    var opts2 = [{ v: 'all', label: S.members.length === 2 ? '둘의 교집합' : '모두의 교집합' }].concat(S.members.map(function (m) {
+      return { v: m.uid, label: m.uid === S.me.uid ? '나에게 맞춰서' : m.name + '님에게 맞춰서' };
+    }));
+    var cur = single ? single.uid : 'all';
+    return h('div', { class: 'group' }, h('p', { class: 'group-label' }, '누구 취향으로?', h('small', null, '가끔은 상대에게 맞춰주기')),
+      h('div', { class: 'chips' }, opts2.map(function (o) {
+        return h('button', { type: 'button', class: 'chip' + (cur === o.v ? ' active' : ''), 'aria-pressed': cur === o.v ? 'true' : 'false', onclick: function () { setWho(o.v); } }, o.label);
+      })),
+      single
+        ? h('p', { class: 'note' }, single.name + '님 취향만 반영해요. ' + (S.members.length === 2 ? '상대가' : '다른 분이') + ' 싫어하는 메뉴도 나올 수 있어요.' +
+          (Object.keys(single.prefs.scores || {}).length ? '' : ' (' + single.name + '님은 아직 월드컵을 안 해서 취향 정보가 없어요)'))
+        : h('p', { class: 'note' }, '한 명이라도 싫어하는 메뉴는 빼고, 모두에게 무난한 메뉴를 골라요.'));
+  }
+
   function tabPick() {
     var c = S.cond, frag = h('div', null);
     if (S.members.length < 2) {
       frag.appendChild(h('div', { class: 'panel', style: 'background:var(--accent-tint)' },
-        h('p', { style: 'margin:0;font-size:14px' }, '아직 혼자예요. 배우자가 초대 코드 ', h('b', { class: 'mono' }, S.household.code), ' 로 합류하면 두 분의 교집합으로 뽑아요.')));
+        h('p', { style: 'margin:0;font-size:14px' }, '아직 혼자예요. 배우자가 초대 코드 ', h('b', { class: 'mono' }, S.household.code), ' 로 합류하면 “둘의 교집합”이나 “한 사람에게 맞춰서” 중에 골라 뽑을 수 있어요.')));
     }
     var count = Core.recommend(rcOpts(1)).stats.afterDislike;
     frag.appendChild(h('div', { class: 'panel' }, h('h2', null, '오늘의 조건'),
+      whoGroup(),
       h('div', { class: 'group' }, h('p', { class: 'group-label' }, '인원'),
         h('div', { class: 'stepper' },
           h('button', { type: 'button', 'aria-label': '인원 줄이기', disabled: c.headcount <= 1, onclick: function () { c.headcount--; condChanged(); } }, '−'),
@@ -363,7 +395,7 @@
         h('button', { class: 'link-btn', onclick: function () { S.cond = defaultCond(); S.result = null; condChanged(); } }, '조건 초기화'),
         h('span', { class: 'mono small muted' }, '후보 ' + count + '개')),
       h('button', { class: 'cta', disabled: count === 0, onclick: function () { S.ignoreRecent = false; doPick(true); } }, count === 0 ? '조건에 맞는 메뉴가 없어요' : '오늘 저녁 뽑기!'),
-      h('p', { class: 'note' }, '최근 ' + settings().recentDays + '일 안에 먹은 메뉴와 둘 중 한 명이라도 싫어하는 메뉴는 빼고 뽑아요.')));
+      h('p', { class: 'note' }, '최근 ' + settings().recentDays + '일 안에 먹은 메뉴는 빼고, ' + (activeMembers().length > 1 ? '한 명이라도 싫어하는 메뉴도 빼고' : '선택한 분이 싫어하는 메뉴도 빼고') + ' 뽑아요.')));
 
     if (S.result) frag.appendChild(resultView());
     return frag;
@@ -670,5 +702,6 @@
       S.view = 'auth'; S.error = e.message; render();
     });
   }
+  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible' && S.view === 'main') refreshQuiet(); });
   boot();
 })();

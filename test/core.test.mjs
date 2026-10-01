@@ -322,3 +322,18 @@ test('싫어요가 좋아요보다 우선하고, 이어하기/되돌리기에서
   assert.equal(Core.wcScores(s2)[m0[0].id], -1);
   assert.ok(!Core.wcGroups(s2).loved[m0[0].id]);
 });
+
+test('누구 취향으로: 교집합이면 상대의 비선호가 빠지고, 한 사람에게 맞추면 그 사람 취향만 본다', () => {
+  const husband = { uid: 'b', name: '남편', prefs: { scores: { malatang: -1, donkatsu: 1 } } };
+  const wife = { uid: 'a', name: '혜리', prefs: { scores: { malatang: 1 } } };
+  const run = (members) => Core.recommend({ menus: MENUS, cond: baseCond, members, history: [], now: NOW, rng: seeded(4), count: 300 });
+  assert.ok(!run([wife, husband]).picks.some((p) => p.menu.id === 'malatang'), '교집합: 남편이 싫어하는 마라탕 제외');
+  const forWife = run([wife]).picks;
+  assert.ok(forWife.some((p) => p.menu.id === 'malatang'), '혜리 기준: 마라탕 나올 수 있음');
+  const top = forWife.find((p) => p.menu.id === 'malatang');
+  assert.match(top.reasons[0].text, /^혜리님 취향에 잘 맞아요/);
+  assert.ok(!run([husband]).picks.some((p) => p.menu.id === 'malatang'), '남편 기준: 마라탕 제외');
+  // 취향 정보가 없는 사람 한 명 기준이면 "그 사람에게 무난한" 표현
+  const blank = run([{ uid: 'c', name: '민수', prefs: {} }]).picks[0];
+  assert.match(blank.reasons[0].text, /^민수님에게 무난한 메뉴예요/);
+});
