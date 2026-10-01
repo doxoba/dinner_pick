@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const Core = require('../core.js');
-const { MENUS, CATEGORIES, TASTES, FORMS } = require('../menus.js');
+const { MENUS, CATEGORIES, TASTES, FORMS, MAINS, DRINKS, MEAL } = require('../menus.js');
+const ALL_TAGS = new Set([...TASTES, ...FORMS, ...MAINS]);
+const SNACKS = MENUS.filter((m) => m.cat !== MEAL);
 
 const byId = Object.fromEntries(MENUS.map((m) => [m.id, m]));
 const NOW = Date.UTC(2026, 9, 1, 10);
@@ -12,18 +14,37 @@ function seeded(seed) { // 재현 가능한 난수
   let s = seed >>> 0;
   return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
 }
-const baseCond = { headcount: 2, priceMin: null, priceMax: null, cats: [], tastes: [], forms: [] };
+const baseCond = { headcount: 2, priceMin: null, priceMax: null, cats: [], tastes: [], forms: [], mains: [], drinks: [] };
 const me = { uid: 'a', name: '나', prefs: {} };
 const hubby = { uid: 'b', name: '남편', prefs: {} };
 
-test('메뉴 DB: id 중복 없음, 카테고리/태그가 정의된 목록 안에 있음', () => {
+test('메뉴 DB: id 중복 없음, 카테고리/태그/술이 정의된 목록 안에 있음', () => {
   assert.equal(new Set(MENUS.map((m) => m.id)).size, MENUS.length);
-  const known = new Set([...TASTES, ...FORMS]);
   for (const m of MENUS) {
     assert.ok(CATEGORIES.includes(m.cat), `${m.id}: 알 수 없는 카테고리 ${m.cat}`);
     assert.ok(m.tags.length > 0 && m.price > 0 && m.kw, m.id);
-    for (const t of m.tags) assert.ok(known.has(t), `${m.id}: 알 수 없는 태그 ${t}`);
+    for (const t of m.tags) assert.ok(ALL_TAGS.has(t), `${m.id}: 알 수 없는 태그 ${t}`);
+    assert.ok(m.drinks.length > 0 && m.drinks.every((d) => DRINKS.includes(d)), `${m.id}: 술 목록 오류 ${m.drinks}`);
     if (m.type === 'share') assert.ok(m.serves[0] >= 1 && m.serves[1] >= m.serves[0], m.id);
+  }
+});
+
+test('메뉴 DB: 안주 메뉴는 128강도 가능한 규모이고, 밥류는 전부 "식사" 카테고리에 있다', () => {
+  assert.ok(new Set(SNACKS.map((m) => m.kw)).size >= 128, '안주 서로 다른 음식 128종 이상');
+  assert.ok(MENUS.filter((m) => m.cat === MEAL).length >= 25);
+  // 초밥은 회 중심이라 일부러 안주(일식)에 남겨둔 예외, 케밥은 이름만 비슷한 빵 요리
+  for (const m of SNACKS) assert.ok(!/밥|도시락|김밥|리조또|포케/.test(m.name.replace('초밥', '').replace('케밥', '')), `${m.name} 은(는) 식사 카테고리여야 함`);
+  for (const m of MENUS.filter((x) => x.cat === MEAL)) assert.equal(m.type, 'each', m.id); // 식사는 1인 기준
+});
+
+test('모든 안주에 조리 방식 태그가 하나 이상 있다 (조리 방식 필터에서 빠지는 메뉴가 없도록)', () => {
+  for (const m of SNACKS) assert.ok(m.tags.some((t) => FORMS.includes(t)), `${m.name} 에 조리 방식 태그가 없음`);
+  for (const f of FORMS) assert.ok(SNACKS.some((m) => m.tags.includes(f)), `조리 방식 '${f}' 에 해당하는 안주가 하나도 없음`);
+});
+
+test('자주 먹는 안주가 DB에 있다 (치킨·닭강정·피자·써브웨이·이삭토스트·에그드랍·낙지볶음·탕짜면·생선구이·호떡·타코야끼·야끼소바·라멘·핫도그)', () => {
+  for (const kw of ['치킨', '닭강정', '피자', '써브웨이', '이삭토스트', '에그드랍', '낙지볶음', '탕짜면', '생선구이', '호떡', '타코야끼', '야끼소바', '라멘', '핫도그', '떡볶이', '제육볶음', '만두']) {
+    assert.ok(SNACKS.some((m) => m.kw.includes(kw) || m.name.includes(kw)), `${kw} 가 안주 카테고리에 없음`);
   }
 });
 
@@ -54,12 +75,12 @@ test('조건 필터: 가격대 · 카테고리 · 맛(any-of)', () => {
 test('최근 7일 안에 먹은 메뉴는 제외 — 사이즈 변형(닭볶음탕 중/대)도 같은 음식으로 취급', () => {
   const history = [
     { menuId: 'dakbokkeum-l', at: NOW - 3 * DAY },
-    { menuId: 'jjajang', at: NOW - 8 * DAY },
+    { menuId: 'donkatsu', at: NOW - 8 * DAY },
   ];
   const r = Core.recommend({ menus: MENUS, cond: { ...baseCond, headcount: 3 }, members: [me, hubby], history, now: NOW, rng: seeded(2), count: 200 });
   const ids = r.picks.map((p) => p.menu.id);
   assert.ok(!ids.includes('dakbokkeum-m') && !ids.includes('dakbokkeum-l'), '닭볶음탕은 제외돼야 함');
-  assert.ok(ids.includes('jjajang'), '8일 전 짜장면은 다시 나올 수 있음');
+  assert.ok(ids.includes('donkatsu'), '8일 전 돈까스는 다시 나올 수 있음');
 });
 
 test('교집합: 한 명이라도 "비선호"인 메뉴는 절대 안 나온다', () => {
@@ -91,7 +112,7 @@ test('취향 점수가 높은 계열이 더 자주 뽑힌다 (가중 랜덤)', (
 test('이유 문장: 취향·최근기록·가격·키워드가 들어간다', () => {
   const m1 = { uid: 'a', name: '혜리', prefs: { scores: { 'kimchijjigae': 0.55 } } };
   const m2 = { uid: 'b', name: '남편', prefs: { scores: { 'kimchijjigae': 1.0 } } };
-  const r = Core.recommend({ menus: MENUS, cond: { ...baseCond, tastes: ['얼큰칼칼'], priceMax: 12000, priceMin: 8000 }, members: [m1, m2], history: [{ menuId: 'jjajang', at: NOW - 1 * DAY }], now: NOW, rng: seeded(5), count: 300 });
+  const r = Core.recommend({ menus: MENUS, cond: { ...baseCond, tastes: ['얼큰칼칼'], priceMax: 12000, priceMin: 8000 }, members: [m1, m2], history: [{ menuId: 'tangsuyuk-s', at: NOW - 1 * DAY }], now: NOW, rng: seeded(5), count: 300 });
   const pick = r.picks.find((p) => p.menu.id === 'kimchijjigae');
   assert.ok(pick, '김치찌개가 후보에 있어야 함');
   const text = pick.reasons.map((x) => x.text).join(' / ');
@@ -105,7 +126,7 @@ test('이유 문장: 취향·최근기록·가격·키워드가 들어간다', (
 });
 
 test('"다시 뽑기": exclude에 넣은 메뉴는 다시 나오지 않는다', () => {
-  const exclude = { jjajang: true, pho: true };
+  const exclude = { donkatsu: true, takoyaki: true };
   const r = Core.recommend({ menus: MENUS, cond: baseCond, members: [me], history: [], now: NOW, rng: seeded(1), count: 300, exclude });
   assert.ok(r.picks.length > 10);
   assert.ok(!r.picks.some((p) => exclude[p.menu.id]));
@@ -115,10 +136,10 @@ test('조사: 받침에 따라 으로/로, 이라/라', () => {
   const hist = (id) => [{ menuId: id, at: NOW - DAY }];
   const reasonFor = (lastId, onlyId) => Core.recommend({ menus: MENUS, cond: baseCond, members: [me], history: hist(lastId), now: NOW, rng: seeded(1), count: 300 })
     .picks.find((p) => p.menu.id === onlyId).reasons.find((r) => r.k === 'variety').text;
-  assert.match(reasonFor('chicken-fried', 'jjajang'), /치킨·피자라 이번엔 중식으로/);
-  assert.match(reasonFor('jjajang', 'pho'), /중식이라 이번엔 아시안으로/);
-  assert.match(reasonFor('jjajang', 'donkatsu'), /일식으로/);
-  assert.match(reasonFor('jjajang', 'pizza-m'), /치킨·피자로/);
+  assert.match(reasonFor('chicken-fried', 'tangsuyuk-s'), /치킨·피자라 이번엔 중식으로/);
+  assert.match(reasonFor('tangsuyuk-s', 'tandoori'), /중식이라 이번엔 아시안으로/);
+  assert.match(reasonFor('tangsuyuk-s', 'donkatsu'), /일식으로/);
+  assert.match(reasonFor('tangsuyuk-s', 'pizza-m'), /치킨·피자로/);
 });
 
 test('이유 문장: 나눠 먹는 메뉴는 "총액 ÷ 인원"과 권장 인원을 보여준다', () => {
@@ -194,16 +215,21 @@ test('마이페이지 요약: 선호/비선호 목록', () => {
 // ---------------------------------------------------------------- 96강
 function play(s, pick) { let i = 0; while (!s.done) { Core.wcChoose(s, pick(i++, s)); if (i > 400) throw new Error('끝나지 않음'); } return s; }
 
-test('음식 월드컵(96강): 서로 다른 음식 96개, 카테고리 고르게, 이미 평가한 메뉴는 뒤로 미룬다', () => {
+test('음식 월드컵(96강): 안주만 서로 다른 음식 96개, 카테고리 고르게, 이미 평가한 메뉴는 뒤로 미룬다', () => {
   const items = Core.wcPick(MENUS, seeded(11), 96, []);
   assert.equal(items.length, 96);
   assert.equal(new Set(items.map((m) => m.kw)).size, 96);
-  for (const c of CATEGORIES) assert.ok(items.some((m) => m.cat === c), c + ' 누락');
-  // 107종 중 평가 안 한 11종 + 평가한 85종 → 평가 안 한 메뉴가 전부 들어온다
-  const known = MENUS.slice(0, 96).map((m) => m.id);
-  const again = Core.wcPick(MENUS, seeded(12), 96, known);
-  const unknown = MENUS.filter((m) => !known.includes(m.id));
-  for (const m of unknown) assert.ok(again.some((a) => a.kw === m.kw), m.id + ' 가 빠짐');
+  assert.ok(items.every((m) => m.cat !== MEAL), '마무리 식사는 월드컵에 나오지 않는다');
+  for (const c of CATEGORIES.filter((c) => c !== MEAL)) assert.ok(items.some((m) => m.cat === c), c + ' 누락');
+  // 이미 평가한 메뉴를 known으로 주면, 아직 평가 안 한 안주가 더 많이 들어온다 (카테고리 균형은 유지하면서)
+  const pool = [...new Map(SNACKS.map((m) => [m.kw, m])).values()];
+  const known = pool.slice(0, 96).map((m) => m.id);
+  const unknownKw = new Set(pool.slice(96).map((m) => m.kw));
+  const countUnknown = (arr) => arr.filter((m) => unknownKw.has(m.kw)).length;
+  const withKnown = Core.wcPick(MENUS, seeded(12), 96, known);
+  const without = Core.wcPick(MENUS, seeded(12), 96, []);
+  assert.ok(countUnknown(withKnown) > countUnknown(without), `${countUnknown(withKnown)} vs ${countUnknown(without)}`);
+  assert.ok(countUnknown(withKnown) >= Math.min(unknownKw.size, 96) * 0.6);
 });
 
 test('음식 월드컵(96강): 부전승이 섞여도 95경기에 끝나고 라운드 이름이 맞다', () => {
@@ -336,4 +362,64 @@ test('누구 취향으로: 교집합이면 상대의 비선호가 빠지고, 한
   // 취향 정보가 없는 사람 한 명 기준이면 "그 사람에게 무난한" 표현
   const blank = run([{ uid: 'c', name: '민수', prefs: {} }]).picks[0];
   assert.match(blank.reasons[0].text, /^민수님에게 무난한 메뉴예요/);
+});
+
+// ---------------------------------------------------------------- 안주 기준 (식사 분리 · 술 필터)
+const pickAll = (cond, extra = {}) => Core.recommend({ menus: MENUS, cond: { ...baseCond, ...cond }, members: [me], history: [], now: NOW, rng: seeded(6), count: 500, ...extra }).picks;
+
+test('식사 카테고리는 평소에는 빠지고, 카테고리에서 "식사"를 골라야만 후보가 된다', () => {
+  assert.ok(pickAll({}).every((p) => p.menu.cat !== MEAL), '기본: 식사 없음');
+  assert.ok(pickAll({ cats: ['한식'] }).every((p) => p.menu.cat === '한식'));
+  const onlyMeal = pickAll({ cats: [MEAL] });
+  assert.ok(onlyMeal.length >= 20 && onlyMeal.every((p) => p.menu.cat === MEAL), '식사만');
+  const both = pickAll({ cats: ['한식', MEAL] });
+  assert.ok(both.some((p) => p.menu.cat === MEAL) && both.some((p) => p.menu.cat === '한식') && both.every((p) => ['한식', MEAL].includes(p.menu.cat)));
+  // 식사를 골랐을 때의 이유 문장, 식사 + 반주
+  const jeyuk = onlyMeal.find((p) => p.menu.id === 'jeyuk');
+  assert.ok(jeyuk.reasons.some((r) => r.k === 'meal'));
+  assert.ok(pickAll({ cats: [MEAL], drinks: ['막걸리'] }).every((p) => p.menu.drinks.includes('막걸리')));
+});
+
+test('술 필터(멀티): 고른 술 중 하나라도 어울리면 후보, 여러 개와 두루 어울릴수록 점수가 높다', () => {
+  const makgeolli = pickAll({ drinks: ['막걸리'] });
+  assert.ok(makgeolli.length > 5 && makgeolli.every((p) => p.menu.drinks.includes('막걸리')));
+  assert.ok(makgeolli.some((p) => p.menu.id === 'haemul-pajeon'));
+  const multi = pickAll({ drinks: ['막걸리', '와인'] });
+  assert.ok(multi.every((p) => p.menu.drinks.some((d) => ['막걸리', '와인'].includes(d))));
+  assert.ok(multi.length > makgeolli.length, '여러 술을 고르면 후보가 넓어진다');
+  // 술 두 개 모두와 어울리는 메뉴가 한 개와만 어울리는 메뉴보다 평균 점수가 높다
+  const both = multi.filter((p) => p.menu.drinks.includes('막걸리') && p.menu.drinks.includes('와인'));
+  const one = multi.filter((p) => !(p.menu.drinks.includes('막걸리') && p.menu.drinks.includes('와인')));
+  if (both.length && one.length) {
+    const avg = (a) => a.reduce((s, p) => s + p.score, 0) / a.length;
+    assert.ok(avg(both) > avg(one) - 0.0001);
+  }
+  // 이유 문장
+  const pajeon = makgeolli.find((p) => p.menu.id === 'haemul-pajeon');
+  assert.match(pajeon.reasons.map((r) => r.text).join('/'), /막걸리와 잘 어울려요/);
+  const two = multi.find((p) => p.menu.drinks.includes('막걸리') && p.menu.drinks.includes('와인'));
+  if (two) assert.match(two.reasons.map((r) => r.text).join('/'), /막걸리·와인 모두와 잘 어울려요/);
+  const partial = multi.find((p) => p.menu.drinks.includes('와인') && !p.menu.drinks.includes('막걸리'));
+  assert.match(partial.reasons.map((r) => r.text).join('/'), /와인과 잘 어울려요 \(고른 술 중 일부\)/);
+});
+
+test('조리 방식/재료 필터: 구이·전·회·탕·튀김·볶음 + 고기/해산물/채소', () => {
+  assert.ok(pickAll({ forms: ['구이'] }).every((p) => p.menu.tags.includes('구이')));
+  assert.ok(pickAll({ forms: ['전'] }).some((p) => p.menu.id === 'kimchi-jeon'));
+  assert.ok(pickAll({ forms: ['회'], mains: ['해산물'] }).every((p) => p.menu.tags.includes('회') && p.menu.tags.includes('해산물')));
+  assert.ok(pickAll({ forms: ['볶음'], mains: ['고기'] }).some((p) => p.menu.id === 'jeyuk-bokkeum'));
+});
+
+test('후보가 없을 때 술/재료 조건 풀기도 제안한다', () => {
+  const r = Core.recommend({ menus: MENUS, cond: { ...baseCond, drinks: ['위스키'], forms: ['전'], mains: ['해산물'], priceMax: 12000 }, members: [me], history: [], now: NOW, rng: seeded(1), count: 3 });
+  assert.equal(r.picks.length, 0);
+  assert.ok(r.suggest.length >= 1 && r.suggest.every((s) => s.count > 0));
+});
+
+test('새 조리 방식(꼬치·조림·마른안주·플래터·간식) 필터', () => {
+  assert.ok(pickAll({ forms: ['꼬치'] }).some((p) => p.menu.id === 'yakitori'));
+  assert.ok(pickAll({ forms: ['마른안주'] }).every((p) => p.menu.tags.includes('마른안주')));
+  assert.ok(pickAll({ forms: ['간식'] }).some((p) => p.menu.id === 'hotteok') && pickAll({ forms: ['간식'] }).some((p) => p.menu.id === 'isaac-toast'));
+  assert.ok(pickAll({ forms: ['플래터'] }).some((p) => p.menu.id === 'cheese-plate'));
+  assert.ok(pickAll({ forms: ['조림'] }).some((p) => p.menu.id === 'godeungeo-jorim'));
 });

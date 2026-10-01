@@ -105,7 +105,7 @@
 
   // ------------------------------------------------------------------ 조건(필터)
   function defaultCond() {
-    return { headcount: S.household ? settings().defaultHeadcount : 2, priceId: 'any', cats: [], tastes: [], forms: [] };
+    return { headcount: S.household ? settings().defaultHeadcount : 2, priceId: 'any', cats: [], drinks: [], tastes: [], forms: [], mains: [] };
   }
   function loadCond() {
     var c = defaultCond();
@@ -116,7 +116,10 @@
         if (PRICE_OPTS.some(function (p) { return p.id === saved.priceId; })) c.priceId = saved.priceId;
         c.cats = (saved.cats || []).filter(function (x) { return DM.CATEGORIES.indexOf(x) !== -1; });
         c.tastes = (saved.tastes || []).filter(function (x) { return DM.TASTES.indexOf(x) !== -1; });
+        // 옛 버전에서 저장된 '국물/밥' 같은 형태 값은 새 목록에 없으면 자동으로 버려진다
         c.forms = (saved.forms || []).filter(function (x) { return DM.FORMS.indexOf(x) !== -1; });
+        c.mains = (saved.mains || []).filter(function (x) { return DM.MAINS.indexOf(x) !== -1; });
+        c.drinks = (saved.drinks || []).filter(function (x) { return DM.DRINKS.indexOf(x) !== -1; });
       }
     } catch (e) { /* 무시 */ }
     S.cond = c;
@@ -125,7 +128,7 @@
   function saveCond() { store.set('dp_cond', JSON.stringify(S.cond)); }
   function condForCore() {
     var p = PRICE_OPTS.filter(function (x) { return x.id === S.cond.priceId; })[0];
-    return { headcount: S.cond.headcount, priceMin: p.min, priceMax: p.max, cats: S.cond.cats, tastes: S.cond.tastes, forms: S.cond.forms };
+    return { headcount: S.cond.headcount, priceMin: p.min, priceMax: p.max, cats: S.cond.cats, tastes: S.cond.tastes, forms: S.cond.forms, mains: S.cond.mains, drinks: S.cond.drinks };
   }
   // 누구 취향으로 뽑을지: 'all'이면 가구 전원의 교집합, 특정 uid면 그 사람 취향만(상대가 싫어하는 메뉴도 나올 수 있다)
   function activeMembers() {
@@ -388,9 +391,11 @@
           h('b', null, c.headcount + '명'),
           h('button', { type: 'button', 'aria-label': '인원 늘리기', disabled: c.headcount >= 6, onclick: function () { c.headcount++; condChanged(); } }, '+'))),
       chipGroup('인당 가격', '배달비 제외', PRICE_OPTS.map(function (p) { return { value: p.id, label: p.label }; }), function (v) { return c.priceId === v; }, function (v) { c.priceId = v; condChanged(); }),
-      chipGroup('카테고리', '여러 개 가능', opts(DM.CATEGORIES), function (v) { return c.cats.indexOf(v) !== -1; }, function (v) { toggle(c.cats, v); condChanged(); }),
+      chipGroup('카테고리', '식사는 고르면 포함돼요', DM.CATEGORIES.map(function (x) { return { value: x, label: x === DM.MEAL ? '식사 · 마무리' : x }; }), function (v) { return c.cats.indexOf(v) !== -1; }, function (v) { toggle(c.cats, v); condChanged(); }),
+      chipGroup('곁들일 술', '둘이 달라도 여러 개 선택', opts(DM.DRINKS), function (v) { return c.drinks.indexOf(v) !== -1; }, function (v) { toggle(c.drinks, v); condChanged(); }),
       chipGroup('맛', '고른 것 중 하나라도', opts(DM.TASTES), function (v) { return c.tastes.indexOf(v) !== -1; }, function (v) { toggle(c.tastes, v); condChanged(); }),
-      chipGroup('재료 · 형태', null, opts(DM.FORMS), function (v) { return c.forms.indexOf(v) !== -1; }, function (v) { toggle(c.forms, v); condChanged(); }),
+      chipGroup('조리 방식', null, opts(DM.FORMS), function (v) { return c.forms.indexOf(v) !== -1; }, function (v) { toggle(c.forms, v); condChanged(); }),
+      chipGroup('재료', null, opts(DM.MAINS), function (v) { return c.mains.indexOf(v) !== -1; }, function (v) { toggle(c.mains, v); condChanged(); }),
       h('div', { class: 'row between', style: 'margin:4px 0 12px' },
         h('button', { class: 'link-btn', onclick: function () { S.cond = defaultCond(); S.result = null; condChanged(); } }, '조건 초기화'),
         h('span', { class: 'mono small muted' }, '후보 ' + count + '개')),
@@ -637,7 +642,7 @@
       var sp = saved && Core.wcProgress(saved);
       return h('div', null, header(),
         h('div', { class: 'panel' }, h('h2', null, '음식 월드컵'),
-          h('p', { style: 'margin:0 0 8px;font-size:15px' }, '두 메뉴 중 지금 더 끌리는 걸 골라주세요. 96개 메뉴가 96강부터 결승까지 붙어요.'),
+          h('p', { style: 'margin:0 0 8px;font-size:15px' }, '두 안주 중 지금 더 끌리는 걸 골라주세요. 96개 안주가 96강부터 결승까지 붙어요. (마무리 식사류는 빠져 있어요)'),
           h('p', { class: 'note', style: 'margin:0 0 14px' }, '둘 다 끌리면 “둘 다 좋아요”(♥ 표시, 한쪽만 다음 라운드로), 정말 싫으면 “둘 다 싫어요”(앞으로 추천에서 빠져요)! 약 95번 고르면 끝나고, 중간에 나가도 이어서 할 수 있어요. 결과는 선호 · 보통 · 비선호 그룹으로 나뉘어요.'),
           saved ? h('button', { class: 'cta', onclick: resumeWc }, saved.done ? '끝난 결과 보고 저장하기' : '이어서 하기 (' + sp.played + ' / ' + sp.total + ')') : null,
           h('button', { class: saved ? 'btn block' : 'cta', style: saved ? 'margin-top:10px' : '', onclick: function () { beginWc(WC_SIZE); } }, saved ? '새로 시작 (96강)' : '96강 시작하기'),

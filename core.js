@@ -28,6 +28,9 @@
     return c >= 0 && c <= 11171 ? c % 28 : 0;
   }
   function ro(word) { var j = jong(word); return word + (j === 0 || j === 8 ? '로' : '으로'); } // ㄹ받침은 '로'
+  function wa(word) { return word + (jong(word) ? '과' : '와'); }
+  var MEAL_CAT = '식사'; // 마무리 식사 카테고리: 카테고리에서 직접 고를 때만 후보가 된다
+  function anyOf(list, have) { return !list || !list.length || list.some(function (x) { return have.indexOf(x) !== -1; }); }
   function iRa(word) { return word + (jong(word) ? '이라' : '라'); }
 
   // ---------------------------------------------------------------- 가격 / 인원
@@ -47,9 +50,11 @@
     var pp = perPerson(menu, n, priceMul);
     if (cond.priceMin != null && pp < cond.priceMin) return false;
     if (cond.priceMax != null && pp > cond.priceMax) return false;
-    if (cond.cats && cond.cats.length && cond.cats.indexOf(menu.cat) === -1) return false;
-    if (cond.tastes && cond.tastes.length && !cond.tastes.some(function (t) { return menu.tags.indexOf(t) !== -1; })) return false;
-    if (cond.forms && cond.forms.length && !cond.forms.some(function (t) { return menu.tags.indexOf(t) !== -1; })) return false;
+    var cats = cond.cats || [];
+    if (menu.cat === MEAL_CAT) { if (cats.indexOf(MEAL_CAT) === -1) return false; }   // 식사는 직접 고른 경우에만
+    else if (cats.length && cats.indexOf(menu.cat) === -1) return false;
+    if (!anyOf(cond.tastes, menu.tags) || !anyOf(cond.forms, menu.tags) || !anyOf(cond.mains, menu.tags)) return false;
+    if (!anyOf(cond.drinks, menu.drinks || [])) return false;
     return true;
   }
 
@@ -157,10 +162,12 @@
       var total = 0.6 * mean + 0.4 * min;
       if (daysAgo == null) total += 0.12;
       else if (daysAgo >= 14) total += 0.06;
+      var drinkMatched = (cond.drinks || []).filter(function (d) { return (menu.drinks || []).indexOf(d) !== -1; });
+      if (cond.drinks && cond.drinks.length) total += 0.08 * drinkMatched.length / cond.drinks.length; // 고른 술 여러 개와 두루 어울릴수록 가산
       var sameCatAsLast = !!(lastMeal && byId[lastMeal.menuId] && byId[lastMeal.menuId].cat === menu.cat);
       if (sameCatAsLast) total -= 0.15;
 
-      out.push({ menu: menu, score: total, per: per, daysAgo: daysAgo, sameCatAsLast: sameCatAsLast, lastMeal: lastMeal });
+      out.push({ menu: menu, score: total, per: per, daysAgo: daysAgo, sameCatAsLast: sameCatAsLast, lastMeal: lastMeal, drinkMatched: drinkMatched });
     });
     return { cands: out, stats: stats, members: members, byId: byId, mul: mul, recentDays: recentDays };
   }
@@ -184,8 +191,10 @@
   var DIMS = [
     ['price', '가격대', function (c) { return Object.assign({}, c, { priceMin: null, priceMax: null }); }],
     ['cats', '카테고리', function (c) { return Object.assign({}, c, { cats: [] }); }],
+    ['drinks', '술', function (c) { return Object.assign({}, c, { drinks: [] }); }],
     ['tastes', '맛 키워드', function (c) { return Object.assign({}, c, { tastes: [] }); }],
-    ['forms', '재료·형태', function (c) { return Object.assign({}, c, { forms: [] }); }]
+    ['forms', '조리 방식', function (c) { return Object.assign({}, c, { forms: [] }); }],
+    ['mains', '재료', function (c) { return Object.assign({}, c, { mains: [] }); }]
   ];
   function dimActive(key, c) {
     if (key === 'price') return c.priceMin != null || c.priceMax != null;
@@ -278,8 +287,18 @@
     // 4) 맛·형태 키워드
     var matched = []
       .concat((cond.tastes || []).filter(function (t) { return menu.tags.indexOf(t) !== -1; }))
-      .concat((cond.forms || []).filter(function (t) { return menu.tags.indexOf(t) !== -1; }));
+      .concat((cond.forms || []).filter(function (t) { return menu.tags.indexOf(t) !== -1; }))
+      .concat((cond.mains || []).filter(function (t) { return menu.tags.indexOf(t) !== -1; }));
     if (matched.length) reasons.push({ k: 'taste', text: '고른 키워드가 그대로 들어있어요: ' + matched.map(function (t) { return '#' + t; }).join(' ') });
+
+    // 4-2) 술 궁합
+    if (cond.drinks && cond.drinks.length && cand.drinkMatched.length) {
+      var dm = cand.drinkMatched;
+      reasons.push({ k: 'drink', text: dm.length === cond.drinks.length
+        ? (dm.length === 1 ? wa(dm[0]) + ' 잘 어울려요' : dm.join('·') + ' 모두와 잘 어울려요')
+        : wa(dm.join('·')) + ' 잘 어울려요 (고른 술 중 일부)' });
+    }
+    if (menu.cat === MEAL_CAT) reasons.push({ k: 'meal', text: '마무리 식사 메뉴예요 (식사 카테고리를 골랐어요)' });
 
     // 5) 다양성
     if (cand.lastMeal && !cand.sameCatAsLast) {
@@ -303,6 +322,7 @@
   }
   function wcPick(menus, rng, size, knownIds) {
     rng = rng || Math.random; size = size || 16;
+    menus = menus.filter(function (m) { return m.cat !== MEAL_CAT; }); // 월드컵은 안주 중심 — 마무리 식사는 제외
     var known = {}; (knownIds || []).forEach(function (id) { known[id] = true; });
     var buckets = {};
     shuffle(menus, rng).sort(function (a, b) { return (known[a.id] ? 1 : 0) - (known[b.id] ? 1 : 0); }).forEach(function (m) {
