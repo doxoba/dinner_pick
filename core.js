@@ -18,6 +18,7 @@
   var DAY = 86400000;
   var FEEDBACK_ADJ = { up: 0.3, down: -0.6 };
   var LIKE_CUT = 0.4; // 이 점수 이상이면 "선호"로 본다
+  var LOVE_FLOOR = 0.5; // "둘 다 좋아요"를 누른 메뉴의 최소 점수(선호 그룹에 들어간다)
 
   function clamp(x, a, b) { return Math.max(a, Math.min(b, x)); }
   function fmtWon(n) { return Number(n).toLocaleString('ko-KR') + '원'; }
@@ -322,7 +323,7 @@
   // 대진 크기는 자유(96강처럼 2의 거듭제곱이 아니어도 된다): 한 라운드에서 짝이 안 맞는 사람은 부전승으로 올라간다.
   // 점수 = (통과한 라운드 수) / (전체 라운드 수) 라서 16강이든 96강이든 같은 0~1 척도가 된다.
   function wcNew(items) {
-    var s = { items: items, queue: [], next: [], cur: 0, adv: {}, dislikes: [], choices: [], played: 0, done: false, champion: null };
+    var s = { items: items, queue: [], next: [], cur: 0, adv: {}, dislikes: [], loves: [], choices: [], played: 0, done: false, champion: null };
     s.rounds = Math.max(1, Math.ceil(Math.log(items.length) / Math.LN2 - 1e-9));
     s.roundSize = items.length; // 라운드 이름용 "대진표상" 인원 ("둘 다 싫어요"로 사람이 빠져도 47강이 되지 않게)
     items.forEach(function (m) { s.adv[m.id] = 0; });
@@ -349,12 +350,14 @@
     var n = s.roundSize;
     return n <= 2 ? '결승' : n === 3 ? '준결승' : n + '강';
   }
-  // choice: 'a' | 'b' | 'none'(둘 다 싫어요)
+  // choice: 'a' | 'b' | 'none'(둘 다 싫어요) | 'both-a' | 'both-b'(둘 다 좋아요 — 둘 다 ♥ 표시하고, 대진은 줄여야 하니 a/b 중 한쪽만 올라간다.
+  //         어느 쪽이 올라갈지는 호출하는 쪽이 정해서 넘긴다: 기록(choices)만으로 똑같이 재생되어야 이어하기/되돌리기가 맞기 때문)
   function wcChoose(s, choice) {
     if (s.done) return s;
     var m = s.queue[s.cur], winner = null;
     if (choice === 'a') winner = m[0];
     else if (choice === 'b') winner = m[1];
+    else if (choice === 'both-a' || choice === 'both-b') { winner = choice === 'both-a' ? m[0] : m[1]; s.loves.push(m[0].id, m[1].id); }
     else { s.dislikes.push(m[0].id, m[1].id); }
     if (winner) s.adv[winner.id] = (s.adv[winner.id] || 0) + 1;
     s.choices.push(choice); s.played++;
@@ -382,7 +385,8 @@
   function wcScores(s) {
     var out = {};
     s.items.forEach(function (m) { out[m.id] = Math.round(Math.min(1, (s.adv[m.id] || 0) / s.rounds) * 100) / 100; });
-    s.dislikes.forEach(function (id) { out[id] = -1; });
+    s.loves.forEach(function (id) { out[id] = Math.max(out[id], LOVE_FLOOR); });
+    s.dislikes.forEach(function (id) { out[id] = -1; }); // 싫어요가 가장 우선
     return out;
   }
   // 결과 화면용: 선호 / 보통 / 비선호 그룹 (선호 = 점수 0.4 이상: 16강이면 4강, 96강이면 상위 12개 안팎)
@@ -394,7 +398,8 @@
       else neutral.push(m);
     });
     liked.sort(function (a, b) { return scores[b.id] - scores[a.id]; });
-    return { liked: liked, neutral: neutral, disliked: disliked, scores: scores };
+    var loved = {}; s.loves.forEach(function (id) { if (scores[id] >= 0) loved[id] = true; });
+    return { liked: liked, neutral: neutral, disliked: disliked, scores: scores, loved: loved };
   }
 
   // 마이페이지용: 저장된 점수 → 선호/비선호 목록

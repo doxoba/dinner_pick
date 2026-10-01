@@ -282,3 +282,43 @@ test('96강 점수로 만든 취향이 추천에 반영된다: 비선호 제외 
   const r = Core.recommend({ menus: MENUS, cond: baseCond, members: [{ uid: 'a', name: '나', prefs: { scores } }], history: [], now: NOW, rng: seeded(1), count: 300 });
   assert.ok(!r.picks.some((p) => hated.includes(p.menu.id)));
 });
+
+test('둘 다 좋아요: 둘 다 ♥ 점수 하한(선호 그룹)을 받고, 대진에는 한쪽만 올라간다 (경기 수는 그대로)', () => {
+  const items = Core.wcPick(MENUS, seeded(31), 96, []);
+  const s = Core.wcNew(items);
+  const [a, b] = Core.wcMatch(s);
+  Core.wcChoose(s, 'both-b');
+  assert.equal(s.adv[b.id], 1); assert.equal(s.adv[a.id], 0);
+  let i = 0; while (!s.done) { Core.wcChoose(s, 'a'); if (++i > 300) throw new Error('끝나지 않음'); }
+  assert.equal(s.played, 95);
+  const g = Core.wcGroups(s);
+  assert.ok(g.scores[a.id] >= 0.5 && g.scores[b.id] >= 0.5, '둘 다 선호 점수 이상');
+  assert.ok(g.liked.some((m) => m.id === a.id) && g.liked.some((m) => m.id === b.id));
+  assert.equal(g.loved[a.id], true); assert.equal(g.loved[b.id], true);
+});
+
+test('둘 다 좋아요만 계속 눌러도 월드컵은 정상 종료된다 (대진이 줄어든다)', () => {
+  const s = Core.wcNew(Core.wcPick(MENUS, seeded(32), 96, []));
+  let i = 0; while (!s.done) { Core.wcChoose(s, i++ % 2 ? 'both-a' : 'both-b'); if (i > 300) throw new Error('끝나지 않음'); }
+  assert.equal(s.played, 95);
+  assert.equal(Object.values(Core.wcScores(s)).filter((v) => v >= 0.5).length, 96); // 전부 ♥
+});
+
+test('싫어요가 좋아요보다 우선하고, 이어하기/되돌리기에서도 "둘 다 좋아요"가 그대로 복원된다', () => {
+  const items = Core.wcPick(MENUS, seeded(33), 96, []);
+  const s = Core.wcNew(items);
+  const first = Core.wcMatch(s).map((m) => m.id);
+  Core.wcChoose(s, 'both-a');
+  const choices = ['both-a', 'a', 'none', 'b', 'both-b'];
+  choices.slice(1).forEach((c) => Core.wcChoose(s, c));
+  const r = Core.wcReplay(items, JSON.parse(JSON.stringify(s.choices)));
+  assert.deepEqual(r.loves, s.loves); assert.deepEqual(r.dislikes, s.dislikes);
+  assert.deepEqual(Core.wcScores(r), Core.wcScores(s));
+  assert.equal(Core.wcUndo(r).loves.length, s.loves.length - 2);
+  assert.ok(first.every((id) => Core.wcScores(r)[id] >= 0.5));
+  // 같은 메뉴에 좋아요 후 싫어요가 오면 싫어요가 이긴다
+  const s2 = Core.wcNew(items); const m0 = Core.wcMatch(s2);
+  Core.wcChoose(s2, 'both-a'); s2.dislikes.push(m0[0].id);
+  assert.equal(Core.wcScores(s2)[m0[0].id], -1);
+  assert.ok(!Core.wcGroups(s2).loved[m0[0].id]);
+});

@@ -58,6 +58,7 @@ a{color:var(--pink);text-decoration:none;} a:hover{color:var(--pink-dark);text-d
 .btn:hover{background:var(--accent);color:var(--ink);text-decoration:none;}
 .btn.pink{background:var(--pink);border-color:var(--pink);color:#fff;} .btn.pink:hover{background:var(--pink-dark);border-color:var(--pink-dark);color:#fff;}
 .btn.ink{background:var(--ink);color:var(--accent);} .btn.ink:hover{background:var(--pink);border-color:var(--pink);color:#fff;}
+.btn.love{background:var(--accent);} .btn.love:hover{background:var(--pink);border-color:var(--pink);color:#fff;}
 .btn.block{display:flex;width:100%;} .btn.sm{padding:6px 12px;font-size:14px;min-height:34px;}
 .btn:disabled{opacity:.45;cursor:not-allowed;pointer-events:none;}
 .btn-row{display:flex;flex-wrap:wrap;gap:8px;} .btn-row > .btn{flex:1 1 auto;white-space:nowrap;}

@@ -606,7 +606,7 @@
       return h('div', null, header(),
         h('div', { class: 'panel' }, h('h2', null, '음식 월드컵'),
           h('p', { style: 'margin:0 0 8px;font-size:15px' }, '두 메뉴 중 지금 더 끌리는 걸 골라주세요. 96개 메뉴가 96강부터 결승까지 붙어요.'),
-          h('p', { class: 'note', style: 'margin:0 0 14px' }, '정말 싫은 메뉴는 “둘 다 싫어요”! 앞으로 추천에서 빠져요. 약 95번 고르면 끝나고, 중간에 나가도 이어서 할 수 있어요. 결과는 선호 · 보통 · 비선호 그룹으로 나뉘어요.'),
+          h('p', { class: 'note', style: 'margin:0 0 14px' }, '둘 다 끌리면 “둘 다 좋아요”(♥ 표시, 한쪽만 다음 라운드로), 정말 싫으면 “둘 다 싫어요”(앞으로 추천에서 빠져요)! 약 95번 고르면 끝나고, 중간에 나가도 이어서 할 수 있어요. 결과는 선호 · 보통 · 비선호 그룹으로 나뉘어요.'),
           saved ? h('button', { class: 'cta', onclick: resumeWc }, saved.done ? '끝난 결과 보고 저장하기' : '이어서 하기 (' + sp.played + ' / ' + sp.total + ')') : null,
           h('button', { class: saved ? 'btn block' : 'cta', style: saved ? 'margin-top:10px' : '', onclick: function () { beginWc(WC_SIZE); } }, saved ? '새로 시작 (96강)' : '96강 시작하기'),
           h('button', { class: 'btn block', style: 'margin-top:10px', onclick: function () { beginWc(WC_QUICK); } }, '빠르게 16강만'),
@@ -625,20 +625,22 @@
       h('div', { class: 'wc-head' }, h('span', null, '음식 월드컵 · ' + Core.wcRoundName(s)), h('span', { class: 'mono small muted' }, pr.played + ' / ' + pr.total)),
       h('div', { class: 'bar', role: 'progressbar', 'aria-valuenow': pr.played, 'aria-valuemax': pr.total }, h('i', { style: 'width:' + Math.round(pr.played / pr.total * 100) + '%' })),
       h('div', { class: 'vs-wrap' }, card(match[0], 'a'), h('span', { class: 'vs-badge' }, 'VS'), card(match[1], 'b')),
-      h('button', { class: 'btn block', onclick: function () { wcStep(function () { Core.wcChoose(s, 'none'); }); } }, '둘 다 싫어요'),
+      h('div', { class: 'grid2' },
+        h('button', { class: 'btn love', onclick: function () { wcStep(function () { Core.wcChoose(s, Math.random() < 0.5 ? 'both-a' : 'both-b'); }); } }, '둘 다 좋아요'),
+        h('button', { class: 'btn', onclick: function () { wcStep(function () { Core.wcChoose(s, 'none'); }); } }, '둘 다 싫어요')),
       h('div', { class: 'row between', style: 'margin-top:14px' },
         h('button', { class: 'link-btn', disabled: !s.choices.length, onclick: function () { wcStep(function () { S.wc = Core.wcUndo(s); }); } }, '← 방금 선택 취소'),
         h('button', { class: 'link-btn', onclick: function () { toast('진행 상황은 저장돼 있어요. 나중에 이어서 할 수 있어요'); wcExit(); } }, '잠시 나가기')));
   }
   function viewWcResult() {
     var s = S.wc, g = Core.wcGroups(s), champ = s.champion;
-    var list = function (arr, cls) { return h('div', { class: 'chips' }, arr.map(function (m) { return h('span', { class: 'chip sm static ' + cls }, m.emoji + ' ' + m.name); })); };
+    var list = function (arr, cls) { return h('div', { class: 'chips' }, arr.map(function (m) { return h('span', { class: 'chip sm static ' + cls }, (g.loved[m.id] ? '♥ ' : '') + m.emoji + ' ' + m.name); })); };
     return h('div', null,
       h('div', { class: 'panel champ' },
         champ ? h('span', { class: 'emo', 'aria-hidden': 'true' }, champ.emoji) : null,
         h('span', { class: 'kicker' }, champ ? '우승 메뉴' : '결과'),
         champ ? h('span', { class: 'nm' }, champ.name) : h('span', { class: 'nm' }, '다 별로셨군요!'),
-        h('p', { class: 'note', style: 'margin:0' }, '이 결과로 비슷한 계열의 취향도 추정해서 추천에 반영해요.')),
+        h('p', { class: 'note', style: 'margin:0' }, '이 결과로 비슷한 계열의 취향도 추정해서 추천에 반영해요. ♥는 “둘 다 좋아요”로 고른 메뉴예요.')),
       h('div', { class: 'panel' },
         h('div', { class: 'group' }, h('p', { class: 'group-label' }, '선호 그룹', h('small', null, g.liked.length + '개')),
           g.liked.length ? list(g.liked, 'like') : h('p', { class: 'note', style: 'margin:0' }, '뚜렷한 선호가 없어요.')),
