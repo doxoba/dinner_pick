@@ -17,7 +17,7 @@
 
   var DAY = 86400000;
   var FEEDBACK_ADJ = { up: 0.3, down: -0.6 };
-  var WC_WIN_SCORE = [0, 0.3, 0.55, 0.8, 1.0]; // 월드컵에서 이긴 횟수 → 선호 점수
+  var LIKE_CUT = 0.4; // 이 점수 이상이면 "선호"로 본다
 
   function clamp(x, a, b) { return Math.max(a, Math.min(b, x)); }
   function fmtWon(n) { return Number(n).toLocaleString('ko-KR') + '원'; }
@@ -225,9 +225,8 @@
   // ---------------------------------------------------------------- 이유 문장
   function rawLabel(raw) {
     if (raw >= 0.95) return '우승';
-    if (raw >= 0.75) return '결승 진출';
-    if (raw >= 0.5) return '4강';
-    if (raw >= 0.25) return '8강';
+    if (raw >= 0.75) return '최상위권';
+    if (raw >= LIKE_CUT) return '상위권';
     return null;
   }
 
@@ -320,9 +319,13 @@
     return shuffle(out, rng);
   }
 
+  // 대진 크기는 자유(96강처럼 2의 거듭제곱이 아니어도 된다): 한 라운드에서 짝이 안 맞는 사람은 부전승으로 올라간다.
+  // 점수 = (통과한 라운드 수) / (전체 라운드 수) 라서 16강이든 96강이든 같은 0~1 척도가 된다.
   function wcNew(items) {
-    var s = { items: items, queue: [], next: [], cur: 0, wins: {}, dislikes: [], done: false, champion: null };
-    items.forEach(function (m) { s.wins[m.id] = 0; });
+    var s = { items: items, queue: [], next: [], cur: 0, adv: {}, dislikes: [], choices: [], played: 0, done: false, champion: null };
+    s.rounds = Math.max(1, Math.ceil(Math.log(items.length) / Math.LN2 - 1e-9));
+    s.roundSize = items.length; // 라운드 이름용 "대진표상" 인원 ("둘 다 싫어요"로 사람이 빠져도 47강이 되지 않게)
+    items.forEach(function (m) { s.adv[m.id] = 0; });
     for (var i = 0; i < items.length; i += 2) s.queue.push([items[i], items[i + 1] || null]);
     return wcSettle(s);
   }
@@ -332,17 +335,19 @@
       if (s.cur >= s.queue.length) {
         if (s.queue.length <= 1) { s.done = true; s.champion = s.next[0] || null; return s; }
         s.queue = []; for (var i = 0; i < s.next.length; i += 2) s.queue.push([s.next[i], s.next[i + 1] || null]);
-        s.next = []; s.cur = 0; continue;
+        s.next = []; s.cur = 0; s.roundSize = Math.ceil(s.roundSize / 2); continue;
       }
       var m = s.queue[s.cur];
       if (m[0] && m[1]) return s;
-      s.next.push(m[0] || m[1] || null); s.cur++; // 부전승: 승수는 올리지 않는다
+      var w = m[0] || m[1] || null;
+      if (w) s.adv[w.id] = (s.adv[w.id] || 0) + 1; // 부전승도 한 라운드 통과로 친다
+      s.next.push(w); s.cur++;
     }
   }
   function wcMatch(s) { return s.done ? null : s.queue[s.cur]; }
   function wcRoundName(s) {
-    var n = s.queue.length * 2;
-    return n <= 2 ? '결승' : n + '강';
+    var n = s.roundSize;
+    return n <= 2 ? '결승' : n === 3 ? '준결승' : n + '강';
   }
   // choice: 'a' | 'b' | 'none'(둘 다 싫어요)
   function wcChoose(s, choice) {
@@ -351,28 +356,41 @@
     if (choice === 'a') winner = m[0];
     else if (choice === 'b') winner = m[1];
     else { s.dislikes.push(m[0].id, m[1].id); }
-    if (winner) s.wins[winner.id] = (s.wins[winner.id] || 0) + 1;
+    if (winner) s.adv[winner.id] = (s.adv[winner.id] || 0) + 1;
+    s.choices.push(choice); s.played++;
     s.next.push(winner); s.cur++;
     return wcSettle(s);
   }
+  // 선택 기록(choices)만 있으면 같은 상태를 다시 만들 수 있다 → "이어하기"와 "되돌리기"에 쓴다
+  function wcReplay(items, choices) {
+    var s = wcNew(items);
+    choices.forEach(function (c) { wcChoose(s, c); });
+    return s;
+  }
+  function wcUndo(s) { return s.choices.length ? wcReplay(s.items, s.choices.slice(0, -1)) : s; }
+  // 진행률: 지금까지 한 경기 + 남은 경기(이미 "둘 다 싫어요"로 사라진 자리까지 반영한 추정치)
   function wcProgress(s) {
-    var total = s.items.length - 1, played = 0; // 토너먼트 총 경기 수는 (참가수-1)
-    Object.keys(s.wins).forEach(function (id) { played += s.wins[id]; });
-    played += s.dislikes.length / 2;
-    return { played: Math.min(played, total), total: total };
+    if (s.done) return { played: s.played, total: s.played };
+    var alive = s.next.filter(Boolean).length, rest = 0;
+    for (var i = s.cur; i < s.queue.length; i++) {
+      var m = s.queue[i];
+      if (m[0] && m[1]) { rest++; alive++; } else if (m[0] || m[1]) alive++;
+    }
+    while (alive > 1) { rest += Math.floor(alive / 2); alive = Math.ceil(alive / 2); }
+    return { played: s.played, total: s.played + rest };
   }
   function wcScores(s) {
     var out = {};
-    s.items.forEach(function (m) { out[m.id] = WC_WIN_SCORE[Math.min(s.wins[m.id] || 0, 4)]; });
+    s.items.forEach(function (m) { out[m.id] = Math.round(Math.min(1, (s.adv[m.id] || 0) / s.rounds) * 100) / 100; });
     s.dislikes.forEach(function (id) { out[id] = -1; });
     return out;
   }
-  // 결과 화면용: 선호 / 보통 / 비선호 그룹
+  // 결과 화면용: 선호 / 보통 / 비선호 그룹 (선호 = 점수 0.4 이상: 16강이면 4강, 96강이면 상위 12개 안팎)
   function wcGroups(s) {
     var scores = wcScores(s), liked = [], neutral = [], disliked = [];
     s.items.forEach(function (m) {
       if (scores[m.id] < 0) disliked.push(m);
-      else if (scores[m.id] >= 0.5) liked.push(m);
+      else if (scores[m.id] >= LIKE_CUT) liked.push(m);
       else neutral.push(m);
     });
     liked.sort(function (a, b) { return scores[b.id] - scores[a.id]; });
@@ -385,7 +403,7 @@
     menus.forEach(function (m) {
       var s = explicit[m.id];
       if (s == null) return;
-      if (s >= 0.5) liked.push({ menu: m, score: s });
+      if (s >= LIKE_CUT) liked.push({ menu: m, score: s });
       else if (s <= -0.5) disliked.push({ menu: m, score: s });
     });
     liked.sort(function (a, b) { return b.score - a.score; });
@@ -396,7 +414,7 @@
     perPerson: perPerson, fitsHeadcount: fitsHeadcount, matchesCond: matchesCond, fmtWon: fmtWon,
     explicitScores: explicitScores, userScore: userScore, makeMemberCtx: makeMemberCtx,
     recommend: recommend, summarizePrefs: summarizePrefs,
-    wcPick: wcPick, wcNew: wcNew, wcMatch: wcMatch, wcChoose: wcChoose, wcRoundName: wcRoundName,
+    wcPick: wcPick, wcNew: wcNew, wcMatch: wcMatch, wcChoose: wcChoose, wcRoundName: wcRoundName, wcReplay: wcReplay, wcUndo: wcUndo,
     wcProgress: wcProgress, wcScores: wcScores, wcGroups: wcGroups
   };
 });

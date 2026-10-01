@@ -96,7 +96,7 @@ test('이유 문장: 취향·최근기록·가격·키워드가 들어간다', (
   assert.ok(pick, '김치찌개가 후보에 있어야 함');
   const text = pick.reasons.map((x) => x.text).join(' / ');
   assert.match(text, /두 분 모두 취향에 잘 맞아요/);
-  assert.match(text, /혜리님 월드컵 4강/);
+  assert.match(text, /혜리님 월드컵 상위권/);
   assert.match(text, /남편님 월드컵 우승/);
   assert.match(text, /아직 한 번도 안 먹어본/);
   assert.match(text, /인당 약 10,000원 — 예산 안/);
@@ -144,7 +144,7 @@ test('음식 월드컵: 16개 선택은 서로 다른 음식이고 카테고리�
   assert.ok(new Set(items.map((m) => m.cat)).size >= 6);
 });
 
-test('음식 월드컵: 매번 첫째를 고르면 우승 1.0 / 결승 0.8 / 4강 0.55 / 8강 0.3 / 16강 탈락 0', () => {
+test('음식 월드컵(16강): 매번 첫째를 고르면 우승 1.0 / 결승 0.75 / 4강 0.5 / 8강 0.25 / 16강 탈락 0', () => {
   const items = Core.wcPick(MENUS, seeded(4), 16, []);
   let s = Core.wcNew(items);
   assert.equal(Core.wcRoundName(s), '16강');
@@ -154,7 +154,7 @@ test('음식 월드컵: 매번 첫째를 고르면 우승 1.0 / 결승 0.8 / 4�
   assert.equal(s.champion.id, items[0].id);
   const scores = Core.wcScores(s);
   assert.equal(scores[items[0].id], 1.0);
-  assert.equal(scores[items[8].id], 0.8);   // 결승 상대
+  assert.equal(scores[items[8].id], 0.75);  // 결승 상대
   assert.equal(Object.keys(scores).length, 16);
   assert.equal(Core.wcProgress(s).played, 15);
 });
@@ -189,4 +189,96 @@ test('마이페이지 요약: 선호/비선호 목록', () => {
   const sum = Core.summarizePrefs(MENUS, { scores: { malatang: 1, jjamppong: 0.8, 'pizza-m': -1, donkatsu: 0.1 } });
   assert.deepEqual(sum.liked.map((x) => x.menu.id), ['malatang', 'jjamppong']);
   assert.deepEqual(sum.disliked.map((x) => x.menu.id), ['pizza-m']);
+});
+
+// ---------------------------------------------------------------- 96강
+function play(s, pick) { let i = 0; while (!s.done) { Core.wcChoose(s, pick(i++, s)); if (i > 400) throw new Error('끝나지 않음'); } return s; }
+
+test('음식 월드컵(96강): 서로 다른 음식 96개, 카테고리 고르게, 이미 평가한 메뉴는 뒤로 미룬다', () => {
+  const items = Core.wcPick(MENUS, seeded(11), 96, []);
+  assert.equal(items.length, 96);
+  assert.equal(new Set(items.map((m) => m.kw)).size, 96);
+  for (const c of CATEGORIES) assert.ok(items.some((m) => m.cat === c), c + ' 누락');
+  // 107종 중 평가 안 한 11종 + 평가한 85종 → 평가 안 한 메뉴가 전부 들어온다
+  const known = MENUS.slice(0, 96).map((m) => m.id);
+  const again = Core.wcPick(MENUS, seeded(12), 96, known);
+  const unknown = MENUS.filter((m) => !known.includes(m.id));
+  for (const m of unknown) assert.ok(again.some((a) => a.kw === m.kw), m.id + ' 가 빠짐');
+});
+
+test('음식 월드컵(96강): 부전승이 섞여도 95경기에 끝나고 라운드 이름이 맞다', () => {
+  const items = Core.wcPick(MENUS, seeded(11), 96, []);
+  const s = Core.wcNew(items);
+  assert.equal(Core.wcRoundName(s), '96강');
+  assert.equal(s.rounds, 7);
+  assert.deepEqual(Core.wcProgress(s), { played: 0, total: 95 });
+  const names = new Set();
+  play(s, () => { names.add(Core.wcRoundName(s)); return 'a'; });
+  assert.equal(s.played, 95);
+  assert.deepEqual([...names], ['96강', '48강', '24강', '12강', '6강', '준결승', '결승']);
+  assert.equal(s.champion.id, items[0].id);
+  assert.equal(Core.wcScores(s)[items[0].id], 1);
+});
+
+test('음식 월드컵(96강): 점수는 0~1로 정규화되고 선호 그룹은 상위권만(12개 안팎)', () => {
+  const items = Core.wcPick(MENUS, seeded(5), 96, []);
+  const rng = seeded(77);
+  const s = play(Core.wcNew(items), () => (rng() < 0.5 ? 'a' : 'b'));
+  const sc = Core.wcScores(s);
+  for (const v of Object.values(sc)) assert.ok(v >= 0 && v <= 1);
+  assert.equal(Object.values(sc).filter((v) => v === 1).length, 1);
+  const g = Core.wcGroups(s);
+  assert.ok(g.liked.length >= 6 && g.liked.length <= 24, `선호 ${g.liked.length}개`);
+  assert.equal(g.liked.length + g.neutral.length + g.disliked.length, 96);
+  assert.ok(g.neutral.length > g.liked.length);
+});
+
+test('라운드 이름은 "둘 다 싫어요"로 사람이 빠져도 대진표 기준으로 유지된다', () => {
+  const s = Core.wcNew(Core.wcPick(MENUS, seeded(3), 96, []));
+  Core.wcChoose(s, 'none');                       // 2명 탈락 → 이번 라운드 승자는 47명
+  const names = new Set();
+  while (!s.done) { names.add(Core.wcRoundName(s)); Core.wcChoose(s, 'a'); }
+  assert.deepEqual([...names], ['96강', '48강', '24강', '12강', '6강', '준결승', '결승']);
+});
+
+test('음식 월드컵: "둘 다 싫어요"를 섞어도 진행률 총 경기 수 추정이 실제와 일치한다', () => {
+  const items = Core.wcPick(MENUS, seeded(3), 96, []);
+  const s = Core.wcNew(items);
+  let i = 0;
+  while (!s.done) {
+    const pr = Core.wcProgress(s);
+    assert.ok(pr.total >= pr.played && pr.total <= 95);
+    Core.wcChoose(s, i % 7 === 3 ? 'none' : 'a'); i++;
+  }
+  assert.equal(Core.wcProgress(s).played, Core.wcProgress(s).total);
+  // 마지막 한 경기 전에는 정확히 1경기 남았다고 말해야 한다
+  const s2 = Core.wcNew(Core.wcPick(MENUS, seeded(3), 96, []));
+  let guard = 0; while (!s2.done && guard++ < 94) Core.wcChoose(s2, 'a');
+  assert.equal(Core.wcProgress(s2).total - Core.wcProgress(s2).played, 1);
+});
+
+test('이어하기/되돌리기: 선택 기록만으로 같은 상태를 복원하고, 한 수 물릴 수 있다', () => {
+  const items = Core.wcPick(MENUS, seeded(8), 96, []);
+  const s = Core.wcNew(items);
+  [ 'a', 'b', 'none', 'a', 'a', 'b' ].forEach((c) => Core.wcChoose(s, c));
+  const saved = JSON.parse(JSON.stringify({ ids: s.items.map((m) => m.id), choices: s.choices }));
+  const byIdLocal = Object.fromEntries(MENUS.map((m) => [m.id, m]));
+  const restored = Core.wcReplay(saved.ids.map((id) => byIdLocal[id]), saved.choices);
+  assert.equal(restored.played, 6);
+  assert.deepEqual(restored.dislikes, s.dislikes);
+  assert.deepEqual(Core.wcMatch(restored).map((m) => m && m.id), Core.wcMatch(s).map((m) => m && m.id));
+  const undone = Core.wcUndo(restored);
+  assert.equal(undone.played, 5);
+  assert.deepEqual(undone.choices, ['a', 'b', 'none', 'a', 'a']);
+  assert.equal(Core.wcUndo(Core.wcNew(items)).played, 0); // 처음에서 되돌려도 안전
+});
+
+test('96강 점수로 만든 취향이 추천에 반영된다: 비선호 제외 + 선호 계열이 더 자주 나온다', () => {
+  const items = Core.wcPick(MENUS, seeded(21), 96, []);
+  const s = play(Core.wcNew(items), (i) => (i === 0 ? 'none' : 'a'));
+  const scores = Core.wcScores(s);
+  const hated = Object.keys(scores).filter((id) => scores[id] < 0);
+  assert.equal(hated.length, 2);
+  const r = Core.recommend({ menus: MENUS, cond: baseCond, members: [{ uid: 'a', name: '나', prefs: { scores } }], history: [], now: NOW, rng: seeded(1), count: 300 });
+  assert.ok(!r.picks.some((p) => hated.includes(p.menu.id)));
 });

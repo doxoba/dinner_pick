@@ -18,7 +18,7 @@
     { id: '20', label: '2~3만', min: 20000, max: 30000 },
     { id: '30', label: '3만 이상', min: 30000, max: null }
   ];
-  var WC_SIZE = 16;
+  var WC_SIZE = 96, WC_QUICK = 16;
 
   // ------------------------------------------------------------------ 유틸
   var store = {
@@ -520,10 +520,10 @@
         h('button', { class: 'btn sm', onclick: logout }, ico('sign-out'), '로그아웃'))));
 
     wrap.appendChild(h('div', { class: 'panel' }, h('h2', null, '내 취향 · 음식 월드컵'),
-      h('p', { class: 'note', style: 'margin:0 0 10px' }, '월드컵 ' + ((mine.wc && mine.wc.runs) || 0) + '회 · 입맛이 바뀌었다면 다시 해보세요. 한 판 더 하면 기존 취향에 덧붙여요.'),
+      h('p', { class: 'note', style: 'margin:0 0 10px' }, '월드컵 ' + ((mine.wc && mine.wc.runs) || 0) + '회 · 입맛이 바뀌었다면 다시 해보세요. 새로 하면 기존 취향에 덧붙여 저장돼요.'),
       prefChips(Core.summarizePrefs(MENUS, mine), '아직 취향 데이터가 없어요. 음식 월드컵을 해보세요!'),
       h('div', { class: 'btn-row', style: 'margin-top:12px' },
-        h('button', { class: 'btn pink', onclick: function () { startWc(); } }, ico('trophy'), '월드컵 하기'),
+        h('button', { class: 'btn pink', onclick: openWc }, ico('trophy'), '월드컵 하기'),
         h('button', { class: 'btn', onclick: resetPrefs }, ico('arrow-counter-clockwise'), '취향 초기화'))));
 
     S.members.filter(function (m) { return m.uid !== S.me.uid; }).forEach(function (m) {
@@ -574,30 +574,50 @@
   }
   function resetPrefs() {
     if (!window.confirm('내 취향(월드컵 결과와 평가)을 모두 지우고 처음부터 할까요?')) return;
-    api('POST', '/api/prefs/reset').then(refresh).then(function () { startWc(); }, fail);
+    api('POST', '/api/prefs/reset').then(refresh).then(function () { store.del(wcKey()); openWc(); }, fail);
   }
 
   // ------------------------------------------------------------------ 음식 월드컵
-  function startWc() {
-    var known = Object.keys(myPrefs().scores || {});
-    S.wc = Core.wcNew(Core.wcPick(MENUS, Math.random, WC_SIZE, known));
-    S.wcStage = 'play'; S.view = 'wc'; render(); window.scrollTo(0, 0);
+  // 96강(≈95경기)은 길어서: 선택마다 진행 상황을 이 기기에 저장해 이어서 할 수 있고, 한 수 물릴 수 있다.
+  var wcKey = function () { return 'dp_wc_' + S.me.uid; };
+  function wcPersist() { store.set(wcKey(), JSON.stringify({ ids: S.wc.items.map(function (m) { return m.id; }), choices: S.wc.choices })); }
+  function wcSaved() {
+    try {
+      var d = JSON.parse(store.get(wcKey()) || 'null');
+      if (!d || !Array.isArray(d.ids) || !Array.isArray(d.choices) || d.ids.some(function (id) { return !MENU_BY_ID[id]; })) return null;
+      var wc = Core.wcReplay(d.ids.map(function (id) { return MENU_BY_ID[id]; }), d.choices);
+      return wc; // 끝난 판(결과 저장 전)도 돌려준다 — 저장에 성공하기 전까지는 기록을 지우지 않는다
+    } catch (e) { return null; }
   }
+  function openWc() { S.view = 'wc'; S.wcStage = 'intro'; S.wc = null; render(); window.scrollTo(0, 0); }
+  function beginWc(size) {
+    var known = Object.keys(myPrefs().scores || {});
+    S.wc = Core.wcNew(Core.wcPick(MENUS, Math.random, size, known));
+    S.wcStage = 'play'; S.view = 'wc'; wcPersist(); render(); window.scrollTo(0, 0);
+  }
+  function resumeWc() { var wc = wcSaved(); if (!wc) return beginWc(WC_SIZE); S.wc = wc; S.wcStage = 'play'; S.view = 'wc'; render(); window.scrollTo(0, 0); }
   function wcExit() { S.view = 'main'; S.wc = null; render(); window.scrollTo(0, 0); }
+  function wcStep(fn) { fn(); wcPersist(); render(); window.scrollTo(0, 0); }
+
   function viewWc() {
     if (S.wcStage === 'intro') {
+      var saved = wcSaved(), first = (myPrefs().wc || {}).runs === 0;
+      var sp = saved && Core.wcProgress(saved);
       return h('div', null, header(),
         h('div', { class: 'panel' }, h('h2', null, '음식 월드컵'),
-          h('p', { style: 'margin:0 0 8px;font-size:15px' }, '두 메뉴 중 지금 더 끌리는 걸 골라주세요. 16강부터 결승까지 한 판이에요.'),
-          h('p', { class: 'note', style: 'margin:0 0 14px' }, '정말 싫은 메뉴는 “둘 다 싫어요”! 앞으로 추천에서 빠져요. 결과는 마이페이지에서 언제든 다시 할 수 있어요.'),
-          h('button', { class: 'cta', onclick: startWc }, '시작하기'),
-          h('p', { style: 'text-align:center;margin:12px 0 0' }, h('button', { class: 'link-btn', onclick: function () { store.set('dp_wc_skip_' + S.me.uid, '1'); wcExit(); } }, '나중에 할게요'))));
+          h('p', { style: 'margin:0 0 8px;font-size:15px' }, '두 메뉴 중 지금 더 끌리는 걸 골라주세요. 96개 메뉴가 96강부터 결승까지 붙어요.'),
+          h('p', { class: 'note', style: 'margin:0 0 14px' }, '정말 싫은 메뉴는 “둘 다 싫어요”! 앞으로 추천에서 빠져요. 약 95번 고르면 끝나고, 중간에 나가도 이어서 할 수 있어요. 결과는 선호 · 보통 · 비선호 그룹으로 나뉘어요.'),
+          saved ? h('button', { class: 'cta', onclick: resumeWc }, saved.done ? '끝난 결과 보고 저장하기' : '이어서 하기 (' + sp.played + ' / ' + sp.total + ')') : null,
+          h('button', { class: saved ? 'btn block' : 'cta', style: saved ? 'margin-top:10px' : '', onclick: function () { beginWc(WC_SIZE); } }, saved ? '새로 시작 (96강)' : '96강 시작하기'),
+          h('button', { class: 'btn block', style: 'margin-top:10px', onclick: function () { beginWc(WC_QUICK); } }, '빠르게 16강만'),
+          h('p', { class: 'note' }, '16강은 가볍게 취향을 보정할 때 좋아요. 기존 취향에 덧붙여 저장돼요.'),
+          h('p', { style: 'text-align:center;margin:12px 0 0' }, h('button', { class: 'link-btn', onclick: function () { if (first) store.set('dp_wc_skip_' + S.me.uid, '1'); wcExit(); } }, first ? '나중에 할게요' : '돌아가기'))));
     }
     var s = S.wc;
     if (s.done) return viewWcResult();
     var match = Core.wcMatch(s), pr = Core.wcProgress(s);
     var card = function (m, choice) {
-      return h('button', { class: 'vs-card', onclick: function () { Core.wcChoose(s, choice); render(); window.scrollTo(0, 0); } },
+      return h('button', { class: 'vs-card', onclick: function () { wcStep(function () { Core.wcChoose(s, choice); }); } },
         h('span', { class: 'emo', 'aria-hidden': 'true' }, m.emoji), h('span', { class: 'nm' }, m.name),
         h('span', { class: 'sub' }, m.cat + ' · ' + m.sub));
     };
@@ -605,8 +625,10 @@
       h('div', { class: 'wc-head' }, h('span', null, '음식 월드컵 · ' + Core.wcRoundName(s)), h('span', { class: 'mono small muted' }, pr.played + ' / ' + pr.total)),
       h('div', { class: 'bar', role: 'progressbar', 'aria-valuenow': pr.played, 'aria-valuemax': pr.total }, h('i', { style: 'width:' + Math.round(pr.played / pr.total * 100) + '%' })),
       h('div', { class: 'vs-wrap' }, card(match[0], 'a'), h('span', { class: 'vs-badge' }, 'VS'), card(match[1], 'b')),
-      h('button', { class: 'btn block', onclick: function () { Core.wcChoose(s, 'none'); render(); window.scrollTo(0, 0); } }, '둘 다 싫어요'),
-      h('p', { style: 'text-align:center;margin:14px 0 0' }, h('button', { class: 'link-btn', onclick: function () { if (window.confirm('여기서 그만할까요? 지금까지의 선택은 저장되지 않아요.')) wcExit(); } }, '그만하기')));
+      h('button', { class: 'btn block', onclick: function () { wcStep(function () { Core.wcChoose(s, 'none'); }); } }, '둘 다 싫어요'),
+      h('div', { class: 'row between', style: 'margin-top:14px' },
+        h('button', { class: 'link-btn', disabled: !s.choices.length, onclick: function () { wcStep(function () { S.wc = Core.wcUndo(s); }); } }, '← 방금 선택 취소'),
+        h('button', { class: 'link-btn', onclick: function () { toast('진행 상황은 저장돼 있어요. 나중에 이어서 할 수 있어요'); wcExit(); } }, '잠시 나가기')));
   }
   function viewWcResult() {
     var s = S.wc, g = Core.wcGroups(s), champ = s.champion;
@@ -618,19 +640,21 @@
         champ ? h('span', { class: 'nm' }, champ.name) : h('span', { class: 'nm' }, '다 별로셨군요!'),
         h('p', { class: 'note', style: 'margin:0' }, '이 결과로 비슷한 계열의 취향도 추정해서 추천에 반영해요.')),
       h('div', { class: 'panel' },
-        g.liked.length ? h('div', { class: 'group' }, h('p', { class: 'group-label' }, '선호 그룹'), list(g.liked, 'like')) : null,
-        g.neutral.length ? h('div', { class: 'group' }, h('p', { class: 'group-label' }, '보통'), list(g.neutral, '')) : null,
-        g.disliked.length ? h('div', { class: 'group' }, h('p', { class: 'group-label' }, '비선호 그룹', h('small', null, '추천에서 빠져요')), list(g.disliked, 'dislike')) : null),
+        h('div', { class: 'group' }, h('p', { class: 'group-label' }, '선호 그룹', h('small', null, g.liked.length + '개')),
+          g.liked.length ? list(g.liked, 'like') : h('p', { class: 'note', style: 'margin:0' }, '뚜렷한 선호가 없어요.')),
+        g.disliked.length ? h('div', { class: 'group' }, h('p', { class: 'group-label' }, '비선호 그룹', h('small', null, g.disliked.length + '개 · 추천에서 빠져요')), list(g.disliked, 'dislike')) : null,
+        g.neutral.length ? h('details', { class: 'group' }, h('summary', { class: 'group-label', style: 'cursor:pointer' }, '보통 ' + g.neutral.length + '개 (눌러서 보기)'), h('div', { style: 'margin-top:8px' }, list(g.neutral, ''))) : null),
       h('div', { class: 'btn-row' },
         h('button', { class: 'btn ink', disabled: S.busy, onclick: function () { saveWc(false); } }, '저장하고 끝내기'),
-        h('button', { class: 'btn', disabled: S.busy, onclick: function () { saveWc(true); } }, '저장하고 한 판 더')));
+        h('button', { class: 'btn', disabled: S.busy, onclick: function () { saveWc(true); } }, '저장하고 한 판 더')),
+      h('p', { style: 'text-align:center;margin:10px 0 0' }, h('button', { class: 'link-btn', onclick: function () { wcStep(function () { S.wc = Core.wcUndo(S.wc); }); } }, '← 마지막 선택 취소')));
   }
   function saveWc(again) {
     var scores = Core.wcGroups(S.wc).scores;
     S.busy = true; render();
     api('PUT', '/api/prefs', { scores: scores, mode: 'merge', completedWorldcup: true }).then(refresh).then(function () {
-      S.busy = false; toast('취향을 저장했어요');
-      if (again) startWc(); else { S.tab = 'me'; wcExit(); }
+      S.busy = false; store.del(wcKey()); toast('취향을 저장했어요');
+      if (again) openWc(); else { S.tab = 'me'; wcExit(); }
     }, function (e) { S.busy = false; render(); fail(e); });
   }
 
