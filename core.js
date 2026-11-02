@@ -141,6 +141,12 @@
     var lastByKw = lastEatenByKw(opts.history, byId);
     var hist = (opts.history || []).slice().sort(function (a, b) { return b.at - a.at; });
     var lastMeal = hist[0] && now - hist[0].at < 1.5 * DAY ? hist[0] : null;
+    var shownKeys = {}; // 이미 보여준 메뉴들의 소분류/조리방식 → 비슷한 메뉴가 연달아 나오지 않게 살짝 감점
+    Object.keys(opts.exclude || {}).forEach(function (id) {
+      var sm = byId[id]; if (!sm) return;
+      shownKeys['sub:' + sm.sub] = (shownKeys['sub:' + sm.sub] || 0) + 1;
+      (cond.forms || []).forEach(function (f) { if (sm.tags.indexOf(f) !== -1) shownKeys['form:' + f] = (shownKeys['form:' + f] || 0) + 1; });
+    });
     var stats = { total: menus.length, afterFilter: 0, afterRecent: 0, afterDislike: 0 };
     var out = [];
 
@@ -163,6 +169,14 @@
       var total = 0.6 * mean + 0.4 * min;
       if (daysAgo == null) total += 0.12;
       else if (daysAgo >= 14) total += 0.06;
+      // 고른 맛·조리·재료 키워드를 많이 포함할수록 가산 (하나만 맞아도 후보지만, 여럿 맞는 쪽이 더 자주 나온다)
+      var kwHit = 0;
+      ['tastes', 'forms', 'mains'].forEach(function (k) { var hit = (cond[k] || []).filter(function (t) { return menu.tags.indexOf(t) !== -1; }).length; kwHit += Math.min(hit, 2); });
+      total += kwHit * 0.04; // 항목(맛/조리/재료)당 최대 2개까지만 — 한 항목에서 칩을 많이 골랐다고 그쪽만 몰리지 않게
+      // 이미 보여준 것과 같은 소분류/조리방식이면 감점
+      var rep = (shownKeys['sub:' + menu.sub] || 0) * 0.15;
+      (cond.forms || []).forEach(function (f) { if (menu.tags.indexOf(f) !== -1) rep += (shownKeys['form:' + f] || 0) * 0.12; });
+      total -= Math.min(rep, 0.6);
       var drinkMatched = (cond.drinks || []).filter(function (d) { return (menu.drinks || []).indexOf(d) !== -1; });
       if (cond.drinks && cond.drinks.length) total += 0.08 * drinkMatched.length / cond.drinks.length; // 고른 술 여러 개와 두루 어울릴수록 가산
       var sameCatAsLast = !!(lastMeal && byId[lastMeal.menuId] && byId[lastMeal.menuId].cat === menu.cat);
@@ -184,7 +198,9 @@
       var picked = pool[idx];
       out.push(picked);
       // 같은 음식의 사이즈 변형(닭볶음탕 중/대)이 한 번에 두 개 나오지 않게
-      pool = pool.filter(function (p) { return p.menu.kw !== picked.menu.kw; });
+      pool = pool.filter(function (p) { return p.menu.kw !== picked.menu.kw; }).map(function (p) {
+        return p.menu.sub === picked.menu.sub ? Object.assign({}, p, { score: p.score - 0.12 }) : p;
+      });
     }
     return out;
   }
