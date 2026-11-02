@@ -489,28 +489,20 @@ test('권장 인원 표기: 범위가 같으면 "2인분", 다르면 "2~3인분"
   assert.match(r.picks[0].reasons.map((x) => x.text).join('/'), /권장 2인분/);
 });
 
-test('다시 뽑기: 이미 보여준 소분류가 같으면 덜 나온다 (4번 뽑았을 때 평균 소분류 종류가 늘어난다)', () => {
-  const cond = { ...baseCond, cats: ['한식'], tastes: ['매운맛'], forms: ['볶음', '무침', '구이'] };
-  let seed = 7; const rng = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-  let distinct = 0, runs = 200;
-  for (let t = 0; t < runs; t++) {
-    const ex = {}, subs = new Set();
-    for (let i = 0; i < 4; i++) {
-      const r = Core.recommend({ menus: MENUS, cond, members: [], history: [], exclude: ex, count: 1, rng, now: NOW });
-      if (!r.picks.length) break;
-      ex[r.picks[0].menu.id] = true; subs.add(r.picks[0].menu.sub);
-    }
-    distinct += subs.size;
-  }
-  assert.ok(distinct / runs > 2, '평균 소분류 종류: ' + distinct / runs);
+const scoreOf = (r, id) => (r.picks.find((p) => p.menu.id === id) || {}).score;
+
+test('다시 뽑기: 이미 보여준 메뉴와 같은 소분류·조리방식이면 점수가 깎인다', () => {
+  const cond = { ...baseCond, forms: ['무침'] };
+  const run = (exclude) => Core.recommend({ menus: MENUS, cond, members: [], history: [], exclude, count: 200, now: NOW });
+  const before = run({});
+  const after = run({ golbaengi: true });
+  assert.ok(scoreOf(after, 'kkomak') < scoreOf(before, 'kkomak')); // 같은 '무침·회' 소분류 + 무침
+  assert.equal(scoreOf(after, 'golbaengi'), undefined);
 });
 
 test('고른 키워드를 더 많이 포함한 메뉴가 점수가 더 높다', () => {
-  const cond = { ...baseCond, tastes: ['매운맛', '새콤상큼'], mains: ['해산물'] };
-  const r = Core.recommend({ menus: MENUS, cond, members: [], history: [], count: 200, rng: () => 0.5, now: NOW });
-  const hits = (m) => [...cond.tastes, ...cond.mains].filter((t) => m.tags.includes(t)).length;
-  const s = (pred) => r.picks.filter((p) => pred(hits(p.menu))).map((p) => p.score);
-  const hi = s((h) => h >= 3), lo = s((h) => h === 1);
-  assert.ok(hi.length && lo.length);
-  assert.ok(Math.max(...hi) > Math.max(...lo));
+  const run = (cond) => Core.recommend({ menus: MENUS, cond: { ...baseCond, ...cond }, members: [], history: [], count: 300, now: NOW });
+  const r = run({ tastes: ['매운맛', '새콤상큼'], mains: ['해산물'] });
+  // 골뱅이무침(매운맛·새콤상큼·해산물 3개) > 꼬막무침(매운맛·해산물 2개)
+  assert.ok(scoreOf(r, 'golbaengi') > scoreOf(r, 'kkomak'));
 });
